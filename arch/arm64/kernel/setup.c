@@ -309,6 +309,7 @@ void __init setup_arch(char **cmdline_p)
 	early_ioremap_init();
 
 	setup_machine_fdt(__fdt_pointer);
+	tb_checkpoint(0);
 
 	/*
 	 * Initialise the static keys early as they may be enabled by the
@@ -357,6 +358,7 @@ void __init setup_arch(char **cmdline_p)
 	else
 		psci_acpi_init();
 
+	tb_checkpoint(1);
 	cpu_read_bootcpu_ops();
 	smp_init_cpus();
 	smp_build_mpidr_hash();

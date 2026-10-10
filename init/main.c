@@ -101,6 +101,7 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/initcall.h>
+#include <linux/arm-smccc.h>
 
 static int kernel_init(void *);
 
@@ -555,6 +556,34 @@ static void __init mm_init(void)
 	pti_init();
 }
 
+
+/*
+ * Bring-up aid: with "tb_reboot_at=N" on the cmdline, reset the board via a
+ * raw PSCI SYSTEM_RESET SMC when boot reaches checkpoint N. A reboot means
+ * the kernel got that far; works before any console or driver exists.
+ */
+void __ref tb_checkpoint(int n)
+{
+	/* saved_command_line exists from start_kernel on and outlives initmem */
+	const char *cmd = saved_command_line ? saved_command_line : boot_command_line;
+	char key[24];
+	const char *p;
+	size_t len;
+
+	len = snprintf(key, sizeof(key), "tb_reboot_at=%d", n);
+	for (p = cmd; (p = strstr(p, key)); p += len) {
+		if ((p == cmd || p[-1] == ' ') &&
+		    (p[len] == '\0' || p[len] == ' ')) {
+			struct arm_smccc_res res;
+
+			arm_smccc_smc(0x84000009 /* PSCI SYSTEM_RESET */,
+				      0, 0, 0, 0, 0, 0, 0, &res);
+			while (1)
+				cpu_relax();
+		}
+	}
+}
+
 asmlinkage __visible void __init start_kernel(void)
 {
 	char *command_line;
@@ -611,6 +640,7 @@ asmlinkage __visible void __init start_kernel(void)
 	sort_main_extable();
 	trap_init();
 	mm_init();
+	tb_checkpoint(2);
 
 	ftrace_init();
 
@@ -759,6 +789,7 @@ asmlinkage __visible void __init start_kernel(void)
 	}
 
 	/* Do the rest non-__init'ed, we're now alive */
+	tb_checkpoint(3);
 	rest_init();
 
 	prevent_tail_call_optimization();
@@ -983,7 +1014,10 @@ static void __init do_initcalls(void)
 	int level;
 
 	for (level = 0; level < ARRAY_SIZE(initcall_levels) - 1; level++)
+	{
+		tb_checkpoint(10 + level);
 		do_initcall_level(level);
+	}
 }
 
 /*
@@ -1105,6 +1139,7 @@ static int __ref kernel_init(void *unused)
 
 	rcu_end_inkernel_boot();
 
+	tb_checkpoint(5);
 	if (ramdisk_execute_command) {
 		ret = run_init_process(ramdisk_execute_command);
 		if (!ret)
@@ -1169,6 +1204,7 @@ static noinline void __init kernel_init_freeable(void)
 	/* Initialize page ext after all struct pages are initialized. */
 	page_ext_init();
 
+	tb_checkpoint(4);
 	do_basic_setup();
 
 	/* Open the /dev/console on the rootfs, this should never fail */

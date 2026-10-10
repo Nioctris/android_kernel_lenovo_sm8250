@@ -142,6 +142,7 @@ struct file_system_type;
 /* Defined in init/main.c */
 extern int do_one_initcall(initcall_t fn);
 extern char __initdata boot_command_line[];
+void tb_checkpoint(int n);
 extern char *saved_command_line;
 extern unsigned int reset_devices;
 
