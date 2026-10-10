@@ -110,8 +110,8 @@ extern const uint16_t touch_key_array[TOUCH_KEY_NUM];
 extern const uint16_t gesture_key_array[];
 #endif
 #define BOOT_UPDATE_FIRMWARE 1
-#define BOOT_UPDATE_FIRMWARE_NAME "novatek_nt36532_m82_fw_tm.bin"
-#define MP_UPDATE_FIRMWARE_NAME   "novatek_nt36532_m82_mp_tm.bin"
+#define BOOT_UPDATE_FIRMWARE_NAME "novatek_ts_tm_fw_6.bin"
+#define MP_UPDATE_FIRMWARE_NAME   "novatek_ts_tm_mp_6.bin"
 #define DEFAULT_DEBUG_FW_NAME     "novatek_debug_fw.bin"
 #define DEFAULT_DEBUG_MP_NAME     "novatek_debug_mp.bin"
 #define NVT_SUPER_RESOLUTION_N 10

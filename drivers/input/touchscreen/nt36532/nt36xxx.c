@@ -15,6 +15,7 @@
  * more details.
  *
  */
+#include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/interrupt.h>
@@ -52,8 +53,9 @@ uint8_t esd_retry = 0;
 #endif /* #if NVT_TOUCH_ESD_PROTECT */
 
 #if defined(NVT_PEN_CONNECT_STRATEGY)
-extern int pen_charge_state_notifier_register_client(struct notifier_block *nb);
-extern int pen_charge_state_notifier_unregister_client(struct notifier_block *nb);
+/* Xiaomi's pen charger notifier chain doesn't exist on TB371FC. */
+static inline int pen_charge_state_notifier_register_client(struct notifier_block *nb) { return 0; }
+static inline int pen_charge_state_notifier_unregister_client(struct notifier_block *nb) { return 0; }
 #endif /* NVT_PEN_CONNECT_STRATEGY */
 
 #if NVT_TOUCH_EXT_PROC
@@ -98,8 +100,9 @@ static void nvt_all_para_recovery(void);
 
 extern int dsi_panel_lockdown_info_read(unsigned char *plockdowninfo);
 extern void dsi_panel_doubleclick_enable(bool on);
-extern void touch_irq_boost(void);
-extern void lpm_disable_for_dev(bool on, char event_dev);
+/* Xiaomi-only input boost hooks; no-ops here. */
+static inline void touch_irq_boost(void) {}
+static inline void lpm_disable_for_dev(bool on, char event_dev) {}
 
 uint32_t ENG_RST_ADDR  = 0x7FFF80;
 uint32_t SPI_RD_FAST_ADDR = 0;	//read from dtsi
@@ -1243,7 +1246,7 @@ nvt_set_pen_enable_out:
 	return ret;
 }
 
-static void release_touch_event() {
+static void release_touch_event(void) {
 	int i = 0;
 
 	if (ts) {
@@ -1264,7 +1267,7 @@ static void release_touch_event() {
 	}
 }
 
-static void release_pen_event() {
+static void release_pen_event(void) {
 	if (ts && ts->pen_input_dev) {
 		input_report_abs(ts->pen_input_dev, ABS_X, 0);
 		input_report_abs(ts->pen_input_dev, ABS_Y, 0);
@@ -1317,8 +1320,11 @@ static int32_t nvt_parse_dt(struct device *dev)
 
 	ret = of_property_read_u32(np, "novatek,config-array-size", &ts->config_array_size);
 	if (ret) {
-		NVT_LOG("Unable to get array size\n");
-		return ret;
+		/* Lenovo DTs have no per-panel config list; firmware is picked by panel name. */
+		NVT_LOG("no novatek,config-array-size, using panel-name firmware selection\n");
+		ts->config_array_size = 0;
+		ts->config_array = NULL;
+		return 0;
 	} else {
 		NVT_LOG("config-array-size: %u\n", ts->config_array_size);
 	}
@@ -1470,6 +1476,18 @@ bool is_lockdown_empty(u8 *lockdown)
 void nvt_match_fw(void)
 {
 	NVT_LOG("start match fw name");
+	if (ts->config_array_size == 0) {
+		/* Lenovo TB371FC: same choice as the stock kernel, by DSI panel name. */
+		if (strstr(saved_command_line, "_boe_nt36532")) {
+			ts->fw_name = "novatek_ts_fw_boe_6.bin";
+			ts->mp_name = "novatek_ts_mp_boe_6.bin";
+		} else {
+			ts->fw_name = BOOT_UPDATE_FIRMWARE_NAME;
+			ts->mp_name = MP_UPDATE_FIRMWARE_NAME;
+		}
+		NVT_LOG("fw is [%s], mp is [%s]", ts->fw_name, ts->mp_name);
+		return;
+	}
 	if (is_lockdown_empty(ts->lockdown_info)){
 		flush_delayed_work(&ts->nvt_lockdown_work);
 	}
@@ -2432,7 +2450,7 @@ static void update_touchfeature_value_work(struct work_struct *work) {
 	NVT_LOG("exit");
 }
 
-static void nvt_set_gesture_mode()
+static void nvt_set_gesture_mode(void)
 {
 	NVT_LOG("%s double click wakeup", ts->db_wakeup ? "ENABLE" : "DISABLE");
 	if (ts->ic_state <= NVT_IC_SUSPEND_OUT && ts->ic_state != NVT_IC_INIT ) {
@@ -2673,7 +2691,11 @@ static u8 nvt_panel_display_read(void)
 	NVT_LOG("%s Get panel display: %d\n", __func__, value);
 	return value;
 }
-#endif
+#else
+static void nvt_all_para_recovery(void)
+{
+}
+#endif /* CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE */
 
 #if defined(NVT_PEN_CONNECT_STRATEGY)
 static int nvt_pen_charge_state_notifier_callback(struct notifier_block *self, unsigned long event, void *data) {
@@ -3445,8 +3467,10 @@ if (pen_charge_state_notifier_unregister_client(&ts->pen_charge_state_notifier))
 err_register_pen_charge_state_failed:
 #endif
 	mutex_destroy(&ts->pen_switch_lock);
+#ifdef CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE
 	destroy_workqueue(ts->set_touchfeature_wq);
-#if CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE
+#endif
+#ifdef CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE
 err_create_set_touchfeature_work_queue:
 	destroy_workqueue(ts->event_wq);
 #endif
@@ -3590,8 +3614,10 @@ static int32_t nvt_ts_remove(struct spi_device *client)
 	destroy_workqueue(ts->event_wq);
 	ts->event_wq = NULL;
 
+#ifdef CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE
 	if (ts->set_touchfeature_wq)
 		destroy_workqueue(ts->set_touchfeature_wq);
+#endif
 
 #if NVT_TOUCH_ESD_PROTECT
 	if (nvt_esd_check_wq) {
@@ -3642,9 +3668,11 @@ static int32_t nvt_ts_remove(struct spi_device *client)
 
 	spi_set_drvdata(client, NULL);
 
-#if CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE
+#ifdef CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE
+#ifdef CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE
 	if (ts->set_touchfeature_wq)
 		destroy_workqueue(ts->set_touchfeature_wq);
+#endif
 #endif
 
 	if (ts->xbuf) {
@@ -3705,7 +3733,7 @@ static void nvt_ts_shutdown(struct spi_device *client)
 	destroy_workqueue(ts->event_wq);
 	ts->event_wq = NULL;
 
-#if CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE
+#ifdef CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE
 	if (ts->set_touchfeature_wq)
 		destroy_workqueue(ts->set_touchfeature_wq);
 #endif
