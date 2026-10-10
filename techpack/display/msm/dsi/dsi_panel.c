@@ -986,6 +986,11 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 		}
 		break;
 	case DSI_BACKLIGHT_EXTERNAL:
+		/* Lenovo TB371FC: two KTZ8866 backlight drivers, one per panel half. */
+		if (bl->raw_bd)
+			rc = backlight_device_set_brightness(bl->raw_bd, bl_lvl);
+		if (bl_slaver->raw_bd)
+			rc = backlight_device_set_brightness(bl_slaver->raw_bd, bl_lvl);
 		break;
 	case DSI_BACKLIGHT_PWM:
 		rc = dsi_panel_update_pwm_backlight(panel, bl_lvl);
@@ -1097,6 +1102,9 @@ static int dsi_panel_bl_register(struct dsi_panel *panel)
 	case DSI_BACKLIGHT_DCS:
 		break;
 	case DSI_BACKLIGHT_EXTERNAL:
+		rc = dsi_panel_wled_register_a(panel, bl);
+		if (!rc)
+			rc = dsi_panel_wled_register_b(panel, bl_slaver);
 		break;
 	case DSI_BACKLIGHT_PWM:
 		rc = dsi_panel_pwm_register(panel);
