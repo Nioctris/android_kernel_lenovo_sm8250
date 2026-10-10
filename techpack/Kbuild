@@ -8,7 +8,7 @@ else ifeq ($(CONFIG_TECHPACK_CAMERA_XIAOMI_CAS),y)
 techpack-dirs += $(srctree)/techpack/camera-xiaomi-cas
 else ifeq ($(CONFIG_TECHPACK_CAMERA_XIAOMI_TABLET),y)
 techpack-dirs += $(srctree)/techpack/camera-xiaomi-tablet
-else
+else ifneq ($(CONFIG_TECHPACK_CAMERA_NONE),y)
 techpack-dirs += $(srctree)/techpack/camera
 endif
 obj-${TECHPACK} += stub/ $(addsuffix /,$(subst $(srctree)/techpack/,,$(techpack-dirs)))

@@ -19,6 +19,11 @@ config TECHPACK_CAMERA_XIAOMI_TABLET
     help
       Xiaomi camera tablet
 
+config TECHPACK_CAMERA_NONE
+    bool "No camera techpack"
+    help
+      Don't build any camera techpack (bring-up / size testing).
+
 endmenu
 
 endmenu
