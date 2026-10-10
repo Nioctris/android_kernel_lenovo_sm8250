@@ -1005,8 +1005,12 @@ static void __init do_initcall_level(int level)
 		   NULL, &repair_env_string);
 
 	trace_initcall_level(initcall_level_names[level]);
-	for (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++)
+	for (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++) {
+		/* bring-up: tb_reboot_at=1000+i stops before the i-th late initcall */
+		if (level == 7)
+			tb_checkpoint(1000 + (int)(fn - initcall_levels[level]));
 		do_one_initcall(initcall_from_entry(fn));
+	}
 }
 
 static void __init do_initcalls(void)
@@ -1122,11 +1126,15 @@ static int __ref kernel_init(void *unused)
 	int ret;
 
 	kernel_init_freeable();
+	tb_checkpoint(20);
 	/* need to finish all async __init code before freeing the memory */
 	async_synchronize_full();
+	tb_checkpoint(21);
 	ftrace_free_init_mem();
 	free_initmem();
+	tb_checkpoint(22);
 	mark_readonly();
+	tb_checkpoint(23);
 
 	/*
 	 * Kernel mappings are now finalized - update the userspace page-table
@@ -1206,10 +1214,12 @@ static noinline void __init kernel_init_freeable(void)
 
 	tb_checkpoint(4);
 	do_basic_setup();
+	tb_checkpoint(6);
 
 	/* Open the /dev/console on the rootfs, this should never fail */
 	if (ksys_open((const char __user *) "/dev/console", O_RDWR, 0) < 0)
 		pr_err("Warning: unable to open an initial console.\n");
+	tb_checkpoint(7);
 
 	(void) ksys_dup(0);
 	(void) ksys_dup(0);
@@ -1224,6 +1234,7 @@ static noinline void __init kernel_init_freeable(void)
 	if (ksys_access((const char __user *)
 			ramdisk_execute_command, 0) != 0) {
 		ramdisk_execute_command = NULL;
+		tb_checkpoint(9);	/* reached only if /init is missing */
 		prepare_namespace();
 	}
 
