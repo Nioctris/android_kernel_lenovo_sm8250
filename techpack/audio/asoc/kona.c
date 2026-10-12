@@ -500,7 +500,7 @@ static struct dev_config mi2s_tx_cfg[] = {
 
 static struct tdm_dev_config pri_tdm_dev_config[MAX_PATH][TDM_PORT_MAX] = {
 	{ /* PRI TDM */
-		{ {0,   4, 0xFFFF} }, /* RX_0 */
+		{ {0,   4,      8, 12, 0xFFFF} }, /* RX_0 */
 		{ {8,  12, 0xFFFF} }, /* RX_1 */
 		{ {16, 20, 0xFFFF} }, /* RX_2 */
 		{ {24, 28, 0xFFFF} }, /* RX_3 */
