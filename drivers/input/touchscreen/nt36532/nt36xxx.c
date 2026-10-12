@@ -1204,6 +1204,13 @@ int switch_pen_input_device(void) {
 	msleep(35);
 	mutex_lock(&ts->pen_switch_lock);
 	enable = ((ts->pen_bluetooth_connect) && !(ts->pen_charge_connect) && !(ts->game_mode_enable));
+#ifndef CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE
+	/*
+	 * Only Xiaomi's touch feature layer reports pen pairing; without it
+	 * (Lenovo TB371FC) pen_bluetooth_connect stays 0, so keep the pen on.
+	 */
+	enable = !ts->game_mode_enable;
+#endif
 #ifdef CONFIG_FACTORY_BUILD
 	enable = 1;
 	ts->pen_bluetooth_connect = 1;
