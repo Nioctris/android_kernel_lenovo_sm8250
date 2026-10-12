@@ -11,6 +11,7 @@
 #include <linux/pwm.h>
 #include <video/mipi_display.h>
 
+#include <linux/input/nvt_lenovo.h>
 #include "dsi_panel.h"
 #include "dsi_ctrl_hw.h"
 #include "dsi_parser.h"
@@ -441,14 +442,14 @@ static inline void dualktz8866_bl_config(void) {}
 #endif
 
 /*
- * With double-tap wake armed, a TDDI panel stays powered across blank so
- * its touch controller keeps scanning; the LCD bias must stay up then too.
+ * Lenovo TB371FC: with double-tap wake armed the touch controller keeps
+ * scanning while the screen is off, so the panel keeps its reset and its
+ * LCD bias from the KTZ8866.
  */
-static bool dsi_panel_keep_power(struct dsi_panel *panel)
+static bool dsi_panel_lcd_gesture(struct dsi_panel *panel)
 {
-	return panel->mi_cfg.is_tddi_flag &&
-	       panel->mi_cfg.tddi_doubleclick_flag &&
-	       !panel->mi_cfg.panel_dead_flag;
+	return panel->bl_config.type == DSI_BACKLIGHT_EXTERNAL &&
+	       nvt_gesture_flag;
 }
 
 static int dsi_panel_set_pinctrl_state(struct dsi_panel *panel, bool enable)
@@ -515,13 +516,10 @@ static int dsi_panel_power_on(struct dsi_panel *panel)
 	 * the rails settle before the panel reset.
 	 */
 	if (panel->bl_config.type == DSI_BACKLIGHT_EXTERNAL) {
-		bool keep = dsi_panel_keep_power(panel);
-
-		if (!keep)
+		if (!dsi_panel_lcd_gesture(panel))
 			dualktz8866_lcd_bias(true);
 		dualktz8866_bl_config();
-		if (!keep)
-			usleep_range(10000, 10010);
+		usleep_range(10000, 10010);
 	}
 
 	/* If LP11_INIT is set, skip panel reset here*/
@@ -554,7 +552,11 @@ exit:
 
 static int dsi_panel_power_off(struct dsi_panel *panel)
 {
+	bool gesture = dsi_panel_lcd_gesture(panel);
 	int rc = 0;
+
+	if (gesture)
+		goto skip_gpios;
 
 	if (gpio_is_valid(panel->reset_config.disp_en_gpio))
 		gpio_set_value(panel->reset_config.disp_en_gpio, 0);
@@ -593,6 +595,7 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 	if (gpio_is_valid(panel->reset_config.lcd_mode_sel_gpio))
 		gpio_set_value(panel->reset_config.lcd_mode_sel_gpio, 0);
 
+skip_gpios:
 	if (gpio_is_valid(panel->panel_test_gpio)) {
 		rc = gpio_direction_input(panel->panel_test_gpio);
 		if (rc)
@@ -600,13 +603,13 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 				 rc);
 	}
 
-	if (panel->bl_config.type == DSI_BACKLIGHT_EXTERNAL &&
-	    !dsi_panel_keep_power(panel)) {
-		dualktz8866_lcd_bias(false);
+	if (panel->bl_config.type == DSI_BACKLIGHT_EXTERNAL) {
+		if (!gesture)
+			dualktz8866_lcd_bias(false);
 		usleep_range(100000, 101000);
 	}
 
-	if (!dsi_panel_keep_power(panel)) {
+	if (!gesture) {
 		rc = dsi_panel_set_pinctrl_state(panel, false);
 		if (rc)
 			DSI_ERR("[%s] failed set pinctrl state, rc=%d\n",
