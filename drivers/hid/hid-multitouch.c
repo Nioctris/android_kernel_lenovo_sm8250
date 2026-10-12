@@ -167,6 +167,9 @@ struct mt_device {
 	__u8 maxcontacts;
 	bool is_buttonpad;	/* is this device a button pad? */
 	bool serial_maybe;	/* need to check for serial protocol */
+	bool lenovo_kbd;	/* Lenovo keyboard folio, see mt_lenovo_kbd_* */
+	bool touchpad_off;	/* touchpad disabled by its toggle key */
+	bool touchpad_key;	/* touchpad toggle key held down */
 
 	struct list_head applications;
 	struct list_head reports;
@@ -174,6 +177,7 @@ struct mt_device {
 
 static void mt_post_parse_default_settings(struct mt_device *td,
 					   struct mt_application *app);
+static void mt_release_contacts(struct hid_device *hid);
 static void mt_post_parse(struct mt_device *td, struct mt_application *app);
 
 /* classes of device behavior */
@@ -1293,6 +1297,34 @@ static int mt_touch_input_configured(struct hid_device *hdev,
 
 #define mt_map_key_clear(c)	hid_map_usage_clear(hi, usage, bit, \
 						    max, EV_KEY, (c))
+/*
+ * Lenovo keyboard folios on I2C (TB371FC "Spinel" keyboard, 17EF:6175)
+ * report their extra keys as consumer usages 0x38e-0x39b. i2c-hid reports
+ * those on its "keyboard_wakeup_devices" input with Lenovo's key codes, as
+ * Lenovo's kernel does, so they are kept off the consumer control input here.
+ * The touchpad on/off key disables the touchpad in the driver, since nothing
+ * above the kernel handles it on Android (ZUI did it in its framework).
+ */
+#define MT_LENOVO_USAGE_TOUCHPAD_TOGGLE	(HID_UP_CONSUMER | 0x392)
+
+static bool mt_lenovo_kbd_special_usage(struct hid_usage *usage)
+{
+	unsigned int code = usage->hid & HID_USAGE;
+
+	return (usage->hid & HID_USAGE_PAGE) == HID_UP_CONSUMER &&
+	       code >= 0x38e && code <= 0x39b;
+}
+
+static void mt_lenovo_kbd_toggle_touchpad(struct hid_device *hid,
+					  struct mt_device *td)
+{
+	td->touchpad_off = !td->touchpad_off;
+	if (td->touchpad_off)
+		mt_release_contacts(hid);
+
+	hid_info(hid, "touchpad %s\n", td->touchpad_off ? "off" : "on");
+}
+
 static int mt_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 		struct hid_field *field, struct hid_usage *usage,
 		unsigned long **bit, int *max)
@@ -1351,6 +1383,9 @@ static int mt_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 		return 1;
 	}
 
+	if (td->lenovo_kbd && mt_lenovo_kbd_special_usage(usage))
+		return -1;
+
 	if (rdata->is_mt_collection)
 		return mt_touch_input_mapping(hdev, hi, field, usage, bit, max,
 					      application);
@@ -1389,6 +1424,13 @@ static int mt_event(struct hid_device *hid, struct hid_field *field,
 	struct mt_device *td = hid_get_drvdata(hid);
 	struct mt_report_data *rdata;
 
+	if (td->lenovo_kbd && usage->hid == MT_LENOVO_USAGE_TOUCHPAD_TOGGLE) {
+		/* Called on every report: toggle on the press only. */
+		if (value && !td->touchpad_key)
+			mt_lenovo_kbd_toggle_touchpad(hid, td);
+		td->touchpad_key = value;
+	}
+
 	rdata = mt_find_report_data(td, field->report);
 	if (rdata && rdata->is_mt_collection)
 		return mt_touch_event(hid, field, usage, value);
@@ -1406,8 +1448,12 @@ static void mt_report(struct hid_device *hid, struct hid_report *report)
 		return;
 
 	rdata = mt_find_report_data(td, report);
-	if (rdata && rdata->is_mt_collection)
+	if (rdata && rdata->is_mt_collection) {
+		if (td->touchpad_off &&
+		    rdata->application->application == HID_DG_TOUCHPAD)
+			return;
 		return mt_touch_report(hid, rdata);
+	}
 
 	if (field && field->hidinput && field->hidinput->input)
 		input_sync(field->hidinput->input);
@@ -1704,6 +1750,8 @@ static int mt_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	td->hdev = hdev;
 	td->mtclass = *mtclass;
 	td->inputmode_value = MT_INPUTMODE_TOUCHSCREEN;
+	td->lenovo_kbd = hdev->bus == BUS_I2C &&
+			 hdev->vendor == USB_VENDOR_ID_LENOVO;
 	hid_set_drvdata(hdev, td);
 
 	INIT_LIST_HEAD(&td->applications);
