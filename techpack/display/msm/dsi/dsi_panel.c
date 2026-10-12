@@ -433,10 +433,23 @@ exit:
 }
 
 #if IS_ENABLED(CONFIG_BACKLIGHT_DUALKTZ8866)
-void dualktz8866_restore_config(void);
+void dualktz8866_lcd_bias(bool on);
+void dualktz8866_bl_config(void);
 #else
-static inline void dualktz8866_restore_config(void) {}
+static inline void dualktz8866_lcd_bias(bool on) {}
+static inline void dualktz8866_bl_config(void) {}
 #endif
+
+/*
+ * With double-tap wake armed, a TDDI panel stays powered across blank so
+ * its touch controller keeps scanning; the LCD bias must stay up then too.
+ */
+static bool dsi_panel_keep_power(struct dsi_panel *panel)
+{
+	return panel->mi_cfg.is_tddi_flag &&
+	       panel->mi_cfg.tddi_doubleclick_flag &&
+	       !panel->mi_cfg.panel_dead_flag;
+}
 
 static int dsi_panel_set_pinctrl_state(struct dsi_panel *panel, bool enable)
 {
@@ -497,13 +510,18 @@ static int dsi_panel_power_on(struct dsi_panel *panel)
 	}
 
 	/*
-	 * Lenovo TB371FC: panel_suspend pulls the KTZ8866 HWEN low, which resets
-	 * their LCD bias setup. Restore it before the panel is reset and
-	 * initialized, or the panel comes back without AVDD/AVEE.
+	 * Panels biased by the KTZ8866 (Lenovo TB371FC): bring up OUTP/OUTN and
+	 * reprogram the backlight chip, both reset while HWEN was low, then let
+	 * the rails settle before the panel reset.
 	 */
 	if (panel->bl_config.type == DSI_BACKLIGHT_EXTERNAL) {
-		usleep_range(2000, 2100);
-		dualktz8866_restore_config();
+		bool keep = dsi_panel_keep_power(panel);
+
+		if (!keep)
+			dualktz8866_lcd_bias(true);
+		dualktz8866_bl_config();
+		if (!keep)
+			usleep_range(10000, 10010);
 	}
 
 	/* If LP11_INIT is set, skip panel reset here*/
@@ -582,10 +600,17 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 				 rc);
 	}
 
-	rc = dsi_panel_set_pinctrl_state(panel, false);
-	if (rc) {
-		DSI_ERR("[%s] failed set pinctrl state, rc=%d\n", panel->name,
-		       rc);
+	if (panel->bl_config.type == DSI_BACKLIGHT_EXTERNAL &&
+	    !dsi_panel_keep_power(panel)) {
+		dualktz8866_lcd_bias(false);
+		usleep_range(100000, 101000);
+	}
+
+	if (!dsi_panel_keep_power(panel)) {
+		rc = dsi_panel_set_pinctrl_state(panel, false);
+		if (rc)
+			DSI_ERR("[%s] failed set pinctrl state, rc=%d\n",
+				panel->name, rc);
 	}
 
 	if (!panel->mi_cfg.is_tddi_flag

@@ -18,6 +18,7 @@
 #include <linux/of.h>
 #include <linux/of_gpio.h>
 #include <linux/i2c.h>
+#include <linux/init.h>
 #include <linux/module.h>
 #include <linux/platform_data/dualktz8866.h>
 #include <linux/slab.h>
@@ -31,27 +32,12 @@ enum {
 	KTZ8866_B,
 };
 
-/*
- * Setup the bootloader programs (backlight mode, LED current, LCD bias). The
- * panel_suspend pinctrl state pulls HWEN low, which resets all of it, so it is
- * saved at probe and restored on panel power-on.
- */
-static const u8 ktz8866_conf_regs[] = {
-	KTZ8866_DISP_BC1, KTZ8866_DISP_BC2,
-	KTZ8866_DISP_BIAS_CONF1, KTZ8866_DISP_BIAS_CONF2,
-	KTZ8866_DISP_BIAS_CONF3, KTZ8866_DISP_BIAS_BOOST,
-	KTZ8866_DISP_BIAS_VPOS, KTZ8866_DISP_BIAS_VNEG,
-	KTZ8866_DISP_OPTION1, KTZ8866_DISP_OPTION2,
-	KTZ8866_DISP_DIMMING, KTZ8866_DISP_FULL_CURRENT,
-};
-
 struct ktz8866 {
 	u8 chip;
 	struct i2c_client *client;
 	struct backlight_device *backlight;
 	struct ktz8866_platform_data *pdata;
-	u8 conf[ARRAY_SIZE(ktz8866_conf_regs)];
-	bool conf_saved;
+	bool lcd_bias;
 };
 
 static struct ktz8866 *bd;
@@ -105,40 +91,81 @@ static int ktz8866_writes(struct ktz8866 *bd, u8 reg, u8 data)
 	return i2c_smbus_write_byte_data(bd->client, reg, data);
 }
 
-static void ktz8866_save_config(struct ktz8866 *bd)
+/*
+ * Lenovo TB371FC: besides the backlight, the KTZ8866 pair supplies the
+ * panel's LCD bias (OUTP/OUTN), and the DT describes its enable pins
+ * (ktz8866,enp-gpio/enn-gpio). As Lenovo's driver does, the chips are then
+ * programmed at probe, the bias rails are sequenced over I2C around panel
+ * power, and the backlight takes linear 11-bit levels. The panel_suspend
+ * pinctrl state drops HWEN, which resets the chips, so the setup is redone
+ * on every panel power-on. Values are from Lenovo's stock TB371FC kernel.
+ */
+#define KTZ8866_BOE_PANEL	"mdss_dsi_panel_spinel_boe_nt36532_dsc_3k_video"
+
+/* KTZ8866_DISP_BIAS_CONF1 */
+#define KTZ8866_BIAS_PINS	0x99	/* OUTP/OUTN follow ENP/ENN */
+#define KTZ8866_BIAS_OFF	0x98
+#define KTZ8866_BIAS_OUTP	0x9c
+#define KTZ8866_BIAS_ON		0x9e
+#define KTZ8866_BIAS_STEP_US	5000
+
+#define KTZ8866_BL_ON		0x4f
+#define KTZ8866_BL_OFF		0x00
+
+static void ktz8866_write_bl_config(struct ktz8866 *bd)
 {
-	int i;
+	bool boe = strstr(saved_command_line, KTZ8866_BOE_PANEL);
 
-	for (i = 0; i < ARRAY_SIZE(ktz8866_conf_regs); i++)
-		if (ktz8866_reads(bd, ktz8866_conf_regs[i], &bd->conf[i]))
-			return;
-
-	bd->conf_saved = true;
+	ktz8866_writes(bd, KTZ8866_DISP_BC2, 0xed);
+	ktz8866_writes(bd, KTZ8866_DISP_BC1, boe ? 0xda : 0xdb);
+	ktz8866_writes(bd, KTZ8866_DISP_DIMMING, 0xaa);
+	ktz8866_writes(bd, KTZ8866_DISP_OPTION2, 0x37);
+	ktz8866_writes(bd, KTZ8866_DISP_FULL_CURRENT, 0xa5);
 }
 
-static void ktz8866_restore_chip(struct ktz8866 *bd)
+static void ktz8866_write_bias_config(struct ktz8866 *bd)
 {
-	int i;
-
-	if (!bd || !bd->conf_saved)
-		return;
-
-	for (i = 0; i < ARRAY_SIZE(ktz8866_conf_regs); i++)
-		ktz8866_writes(bd, ktz8866_conf_regs[i], bd->conf[i]);
+	ktz8866_writes(bd, KTZ8866_DISP_BIAS_BOOST, 0x2e);
+	ktz8866_writes(bd, KTZ8866_DISP_BIAS_VPOS, 0x24);
+	ktz8866_writes(bd, KTZ8866_DISP_BIAS_VNEG, 0x24);
 }
 
-/* Called by the DSI panel driver once HWEN is high again. */
-void dualktz8866_restore_config(void)
+/*
+ * Switch the LCD bias, OUTP first and OUTN after it, the reverse when going
+ * off. Called by the DSI panel driver around panel power.
+ */
+void dualktz8866_lcd_bias(bool on)
 {
-	if (!bd_a && !bd_b)
+	if (!bd_b || !bd_b->lcd_bias)
 		return;
 
 	mutex_lock(&g_ktz8866_led.lock);
-	ktz8866_restore_chip(bd_a);
-	ktz8866_restore_chip(bd_b);
+	if (on) {
+		ktz8866_write_bl_config(bd_b);
+		ktz8866_write_bias_config(bd_b);
+		ktz8866_writes(bd_b, KTZ8866_DISP_BIAS_CONF1, KTZ8866_BIAS_OUTP);
+		usleep_range(KTZ8866_BIAS_STEP_US, KTZ8866_BIAS_STEP_US + 100);
+		ktz8866_writes(bd_b, KTZ8866_DISP_BIAS_CONF1, KTZ8866_BIAS_ON);
+	} else {
+		ktz8866_writes(bd_b, KTZ8866_DISP_BIAS_CONF1, KTZ8866_BIAS_OUTP);
+		usleep_range(KTZ8866_BIAS_STEP_US, KTZ8866_BIAS_STEP_US + 100);
+		ktz8866_writes(bd_b, KTZ8866_DISP_BIAS_CONF1, KTZ8866_BIAS_OFF);
+	}
 	mutex_unlock(&g_ktz8866_led.lock);
 }
-EXPORT_SYMBOL(dualktz8866_restore_config);
+EXPORT_SYMBOL(dualktz8866_lcd_bias);
+
+/* Reprogram the backlight setup of the first chip after panel power-on. */
+void dualktz8866_bl_config(void)
+{
+	if (!bd_a || !bd_a->lcd_bias)
+		return;
+
+	mutex_lock(&g_ktz8866_led.lock);
+	ktz8866_write_bl_config(bd_a);
+	mutex_unlock(&g_ktz8866_led.lock);
+}
+EXPORT_SYMBOL(dualktz8866_bl_config);
 
 static int pwm_to_51(int pwm)
 {
@@ -273,8 +300,11 @@ static int ktz8866_backlight_update_status(struct backlight_device *backlight)
 	int brightness = 0;
 	u8 v[2];
 
-	brightness = bl_level_remap[exponential_bl];
-	/* brightness = exponential_bl; */
+	/* Lenovo panels take the level as is; Xiaomi's remap it. */
+	if (bd->lcd_bias)
+		brightness = exponential_bl;
+	else
+		brightness = bl_level_remap[exponential_bl];
 
 	if (brightness < 0 || brightness > BL_LEVEL_MAX)
 		return 0;
@@ -285,7 +315,10 @@ static int ktz8866_backlight_update_status(struct backlight_device *backlight)
 		 "ktz8866 backlight 0x%02x ,exponential brightness %d \n",
 		 brightness, exponential_bl);
 
-	if (brightness > 0) {
+	if (bd->lcd_bias) {
+		ktz8866_writes(bd, KTZ8866_DISP_BL_ENABLE,
+			       brightness ? KTZ8866_BL_ON : KTZ8866_BL_OFF);
+	} else if (brightness > 0) {
 		ktz8866_writes(bd, KTZ8866_DISP_BL_ENABLE, 0x4f);
 		dev_warn(&bd->client->dev,
 			 "ktz8866 backlight enable,dimming close");
@@ -336,6 +369,7 @@ static int parse_dt(struct device *dev, struct ktz8866_platform_data *pdata)
 
 	pdata->hw_en_gpio =
 		of_get_named_gpio_flags(np, "ktz8866,hwen-gpio", 0, NULL);
+	bd->lcd_bias = of_property_read_bool(np, "ktz8866,enp-gpio");
 
 	return 0;
 }
@@ -421,7 +455,14 @@ static int ktz8866_probe(struct i2c_client *client,
 	dev_err(&bd->client->dev, "ktz8866 reading 0x%02x is 0x%02x\n",
 		KTZ8866_DISP_FLAGS, read);
 
-	ktz8866_save_config(bd);
+	if (bd->lcd_bias) {
+		if (bd->chip == KTZ8866_B) {
+			ktz8866_write_bias_config(bd);
+			ktz8866_writes(bd, KTZ8866_DISP_BIAS_CONF1,
+				       KTZ8866_BIAS_PINS);
+		}
+		ktz8866_write_bl_config(bd);
+	}
 
 	if (bd->chip == KTZ8866_A) {
 		ktz8866_status.ktz8866a_init = true;
