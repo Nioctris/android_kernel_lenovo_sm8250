@@ -3298,6 +3298,22 @@ static struct platform_driver ipa_ipa_mpm_driver = {
  */
 static int __init ipa_mpm_init(void)
 {
+	struct device_node *ipa_node;
+	bool ipa_available;
+
+	/*
+	 * MPM sits on top of the IPA core. Wi-Fi only boards such as the
+	 * Lenovo TB371FC leave qcom,ipa-mpm enabled but disable the IPA core,
+	 * and probing MPM without it hangs the board.
+	 */
+	ipa_node = of_find_compatible_node(NULL, NULL, "qcom,ipa");
+	ipa_available = ipa_node && of_device_is_available(ipa_node);
+	of_node_put(ipa_node);
+	if (!ipa_available) {
+		IPA_MPM_DBG("IPA core is disabled, not registering ipa_mpm\n");
+		return 0;
+	}
+
 	IPA_MPM_DBG("register ipa_mpm platform device\n");
 	return platform_driver_register(&ipa_ipa_mpm_driver);
 }
