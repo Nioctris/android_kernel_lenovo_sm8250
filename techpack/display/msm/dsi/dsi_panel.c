@@ -432,6 +432,12 @@ exit:
 	return rc;
 }
 
+#if IS_ENABLED(CONFIG_BACKLIGHT_DUALKTZ8866)
+void dualktz8866_restore_config(void);
+#else
+static inline void dualktz8866_restore_config(void) {}
+#endif
+
 static int dsi_panel_set_pinctrl_state(struct dsi_panel *panel, bool enable)
 {
 	int rc = 0;
@@ -488,6 +494,16 @@ static int dsi_panel_power_on(struct dsi_panel *panel)
 	if (rc) {
 		DSI_ERR("[%s] failed to set pinctrl, rc=%d\n", panel->name, rc);
 		goto error_disable_vregs;
+	}
+
+	/*
+	 * Lenovo TB371FC: panel_suspend pulls the KTZ8866 HWEN low, which resets
+	 * their LCD bias setup. Restore it before the panel is reset and
+	 * initialized, or the panel comes back without AVDD/AVEE.
+	 */
+	if (panel->bl_config.type == DSI_BACKLIGHT_EXTERNAL) {
+		usleep_range(2000, 2100);
+		dualktz8866_restore_config();
 	}
 
 	/* If LP11_INIT is set, skip panel reset here*/

@@ -31,11 +31,27 @@ enum {
 	KTZ8866_B,
 };
 
+/*
+ * Setup the bootloader programs (backlight mode, LED current, LCD bias). The
+ * panel_suspend pinctrl state pulls HWEN low, which resets all of it, so it is
+ * saved at probe and restored on panel power-on.
+ */
+static const u8 ktz8866_conf_regs[] = {
+	KTZ8866_DISP_BC1, KTZ8866_DISP_BC2,
+	KTZ8866_DISP_BIAS_CONF1, KTZ8866_DISP_BIAS_CONF2,
+	KTZ8866_DISP_BIAS_CONF3, KTZ8866_DISP_BIAS_BOOST,
+	KTZ8866_DISP_BIAS_VPOS, KTZ8866_DISP_BIAS_VNEG,
+	KTZ8866_DISP_OPTION1, KTZ8866_DISP_OPTION2,
+	KTZ8866_DISP_DIMMING, KTZ8866_DISP_FULL_CURRENT,
+};
+
 struct ktz8866 {
 	u8 chip;
 	struct i2c_client *client;
 	struct backlight_device *backlight;
 	struct ktz8866_platform_data *pdata;
+	u8 conf[ARRAY_SIZE(ktz8866_conf_regs)];
+	bool conf_saved;
 };
 
 static struct ktz8866 *bd;
@@ -88,6 +104,41 @@ static int ktz8866_writes(struct ktz8866 *bd, u8 reg, u8 data)
 {
 	return i2c_smbus_write_byte_data(bd->client, reg, data);
 }
+
+static void ktz8866_save_config(struct ktz8866 *bd)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(ktz8866_conf_regs); i++)
+		if (ktz8866_reads(bd, ktz8866_conf_regs[i], &bd->conf[i]))
+			return;
+
+	bd->conf_saved = true;
+}
+
+static void ktz8866_restore_chip(struct ktz8866 *bd)
+{
+	int i;
+
+	if (!bd || !bd->conf_saved)
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(ktz8866_conf_regs); i++)
+		ktz8866_writes(bd, ktz8866_conf_regs[i], bd->conf[i]);
+}
+
+/* Called by the DSI panel driver once HWEN is high again. */
+void dualktz8866_restore_config(void)
+{
+	if (!bd_a && !bd_b)
+		return;
+
+	mutex_lock(&g_ktz8866_led.lock);
+	ktz8866_restore_chip(bd_a);
+	ktz8866_restore_chip(bd_b);
+	mutex_unlock(&g_ktz8866_led.lock);
+}
+EXPORT_SYMBOL(dualktz8866_restore_config);
 
 static int pwm_to_51(int pwm)
 {
@@ -369,6 +420,8 @@ static int ktz8866_probe(struct i2c_client *client,
 	ktz8866_read(KTZ8866_DISP_FLAGS, &read);
 	dev_err(&bd->client->dev, "ktz8866 reading 0x%02x is 0x%02x\n",
 		KTZ8866_DISP_FLAGS, read);
+
+	ktz8866_save_config(bd);
 
 	if (bd->chip == KTZ8866_A) {
 		ktz8866_status.ktz8866a_init = true;
