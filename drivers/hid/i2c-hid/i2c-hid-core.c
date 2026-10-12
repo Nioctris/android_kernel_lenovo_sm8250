@@ -747,46 +747,82 @@ static int i2c_hid_kb_panel_event(struct notifier_block *nb,
 }
 #endif
 
-static ssize_t kb_status_show(struct device *dev,
-			      struct device_attribute *attr, char *buf)
-{
-	struct i2c_hid *ihid = i2c_get_clientdata(to_i2c_client(dev));
+/*
+ * Keyboard state for Lenovo's keyboard service, at the same place as in
+ * the stock kernel: /sys/kb_status/.
+ */
+static struct i2c_hid *i2c_hid_kb_mcu;
+static struct kobject *i2c_hid_kb_kobj;
 
+static ssize_t kb_status_value_show(struct kobject *kobj,
+				    struct kobj_attribute *attr, char *buf)
+{
 	return sprintf(buf, "%d\n",
-		       !!(ihid->kb_state & I2C_HID_KB_STATE_ATTACHED));
+		       !!(i2c_hid_kb_mcu->kb_state & I2C_HID_KB_STATE_ATTACHED));
 }
-static DEVICE_ATTR_RO(kb_status);
 
-static ssize_t kb_hall_show(struct device *dev,
-			    struct device_attribute *attr, char *buf)
+static ssize_t kb_hall_value_show(struct kobject *kobj,
+				  struct kobj_attribute *attr, char *buf)
 {
-	struct i2c_hid *ihid = i2c_get_clientdata(to_i2c_client(dev));
-
-	return sprintf(buf, "%d\n", !!(ihid->kb_state & I2C_HID_KB_STATE_HALL));
+	return sprintf(buf, "%d\n",
+		       !!(i2c_hid_kb_mcu->kb_state & I2C_HID_KB_STATE_HALL));
 }
-static DEVICE_ATTR_RO(kb_hall);
 
-static ssize_t kb_id_show(struct device *dev,
-			  struct device_attribute *attr, char *buf)
+static ssize_t kb_vid_pid_show(struct kobject *kobj,
+			       struct kobj_attribute *attr, char *buf)
 {
-	struct i2c_hid *ihid = i2c_get_clientdata(to_i2c_client(dev));
-
 	return sprintf(buf, "VID:[0x%x],PID:[0x%x]\n",
-		       le16_to_cpu(ihid->hdesc.wVendorID),
-		       le16_to_cpu(ihid->hdesc.wProductID));
+		       le16_to_cpu(i2c_hid_kb_mcu->hdesc.wVendorID),
+		       le16_to_cpu(i2c_hid_kb_mcu->hdesc.wProductID));
 }
-static DEVICE_ATTR_RO(kb_id);
+
+static struct kobj_attribute kb_status_value_attr = __ATTR_RO(kb_status_value);
+static struct kobj_attribute kb_hall_value_attr = __ATTR_RO(kb_hall_value);
+static struct kobj_attribute kb_vid_pid_attr = __ATTR_RO(kb_vid_pid);
 
 static struct attribute *i2c_hid_kb_attrs[] = {
-	&dev_attr_kb_status.attr,
-	&dev_attr_kb_hall.attr,
-	&dev_attr_kb_id.attr,
+	&kb_status_value_attr.attr,
+	&kb_hall_value_attr.attr,
+	&kb_vid_pid_attr.attr,
 	NULL,
 };
 
 static const struct attribute_group i2c_hid_kb_attr_group = {
 	.attrs = i2c_hid_kb_attrs,
 };
+
+static int i2c_hid_kb_sysfs_init(struct i2c_hid *ihid)
+{
+	int ret;
+
+	if (i2c_hid_kb_kobj)
+		return -EBUSY;
+
+	i2c_hid_kb_kobj = kobject_create_and_add("kb_status", NULL);
+	if (!i2c_hid_kb_kobj)
+		return -ENOMEM;
+
+	i2c_hid_kb_mcu = ihid;
+	ret = sysfs_create_group(i2c_hid_kb_kobj, &i2c_hid_kb_attr_group);
+	if (ret) {
+		kobject_put(i2c_hid_kb_kobj);
+		i2c_hid_kb_kobj = NULL;
+		i2c_hid_kb_mcu = NULL;
+	}
+
+	return ret;
+}
+
+static void i2c_hid_kb_sysfs_exit(void)
+{
+	if (!i2c_hid_kb_kobj)
+		return;
+
+	sysfs_remove_group(i2c_hid_kb_kobj, &i2c_hid_kb_attr_group);
+	kobject_put(i2c_hid_kb_kobj);
+	i2c_hid_kb_kobj = NULL;
+	i2c_hid_kb_mcu = NULL;
+}
 
 static int i2c_hid_kb_of_probe(struct i2c_client *client,
 			       struct i2c_hid *ihid)
@@ -866,7 +902,7 @@ static int i2c_hid_kb_init(struct i2c_hid *ihid)
 		return ret;
 	ihid->kb_wake_input = input;
 
-	ret = devm_device_add_group(dev, &i2c_hid_kb_attr_group);
+	ret = i2c_hid_kb_sysfs_init(ihid);
 	if (ret)
 		return ret;
 
@@ -875,8 +911,10 @@ static int i2c_hid_kb_init(struct i2c_hid *ihid)
 #if IS_ENABLED(CONFIG_DRM)
 	ihid->kb_panel_nb.notifier_call = i2c_hid_kb_panel_event;
 	ret = mi_drm_register_client(&ihid->kb_panel_nb);
-	if (ret)
+	if (ret) {
+		i2c_hid_kb_sysfs_exit();
 		return ret;
+	}
 #endif
 
 	return 0;
@@ -901,6 +939,7 @@ static void i2c_hid_kb_exit(struct i2c_hid *ihid)
 #if IS_ENABLED(CONFIG_DRM)
 	mi_drm_unregister_client(&ihid->kb_panel_nb);
 #endif
+	i2c_hid_kb_sysfs_exit();
 }
 
 static void i2c_hid_get_input(struct i2c_hid *ihid)
