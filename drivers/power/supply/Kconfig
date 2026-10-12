@@ -209,6 +209,15 @@ config MANAGER_SBS
 	  This driver can also be built as a module. If so, the module will be
 	  called sbs-manager.
 
+config FUEL_GAUGE_MM8013
+	tristate "Mitsumi MM8013 fuel gauge driver"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  Say Y here to enable the Mitsumi MM8013 fuel gauge driver, as used by
+	  the Lenovo TB371FC (stock kernel: CONFIG_MM8013C06_BATTERY). It
+	  registers the "bms" supply the Qualcomm SMB5 charger stack reads.
+
 config BATTERY_BQ27XXX
 	tristate "BQ27xxx battery driver"
 	help
