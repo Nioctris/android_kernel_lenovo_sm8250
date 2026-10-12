@@ -3238,6 +3238,13 @@ enum tfa_error tfa_dev_start(struct tfa_device *tfa, int next_profile, int vstep
 		if (strstr(tfaContProfileName(tfa->cnt, tfa->dev_idx, next_profile), ".standby") != NULL) {
 			pr_info("Skip powering on device, in standby profile!\n");
 		} else {
+			/* Apply the TDM sink slots requested by the platform */
+			if (tfa->tdm_sink_slot[0] >= 0 &&
+				tfa_dev_set_tdm_sink_slots(tfa, tfa->tdm_sink_slot[0],
+					tfa->tdm_sink_slot[1]) != tfa_error_ok)
+				pr_err("Error setting TDM sink slots %d/%d\n",
+					tfa->tdm_sink_slot[0], tfa->tdm_sink_slot[1]);
+
 			/* Make sure internal oscillator is running for DSP devices (non-dsp and max1 this is no-op) */
 			tfa98xx_set_osc_powerdown(tfa, 0);
 
@@ -4197,6 +4204,89 @@ void tfa_dev_get_tdm_add(struct tfa_device* tfa, uint16_t* tdme, uint16_t* tnbck
 		pr_err("unsuported device rev:%x\n", revid);
 		break;
 	}
+}
+
+static int tfa_dev_get_tdm_sink_add(struct tfa_device *tfa, uint16_t *tdme,
+	uint16_t *spks, uint16_t *dcs)
+{
+	switch (tfa->rev & 0xff) {
+	case 0x94:
+		*tdme = TFA9894_BF_TDME;
+		*spks = TFA9894_BF_TDMSPKS;
+		*dcs = TFA9894_BF_TDMDCS;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+enum tfa_error tfa_dev_set_tdm_sink_slots(struct tfa_device *tfa, int spks_slot, int dcs_slot)
+{
+	uint16_t tdme, spks, dcs;
+	enum Tfa98xx_Error err;
+
+	if (tfa_dev_get_tdm_sink_add(tfa, &tdme, &spks, &dcs))
+		return tfa_error_bad_param;
+
+	/* the slots are latched when the interface is (re)enabled */
+	err = tfa_set_bf(tfa, tdme, 0);
+	if (err == Tfa98xx_Error_Ok)
+		err = tfa_set_bf(tfa, spks, (uint16_t)spks_slot);
+	if (err == Tfa98xx_Error_Ok)
+		err = tfa_set_bf(tfa, dcs, (uint16_t)dcs_slot);
+	if (err == Tfa98xx_Error_Ok)
+		err = tfa_set_bf(tfa, tdme, 1);
+
+	return (err == Tfa98xx_Error_Ok) ? tfa_error_ok : tfa_error_device;
+}
+
+#define TFA_VOL_MUTED		255	/* CF firmware volume: attenuation steps */
+#define TFA_VOL_RAMP_STEPS	8
+
+static void tfa_ramp_volume(struct tfa_device *tfa, int from, int to)
+{
+	int i;
+
+	for (i = 1; i <= TFA_VOL_RAMP_STEPS; i++) {
+		TFA_SET_BF(tfa, VOL, from + (to - from) * i / TFA_VOL_RAMP_STEPS);
+		msleep(1);
+	}
+}
+
+enum tfa_error tfa_dev_switch_tdm_sink_slots(struct tfa_device *tfa, int spks_slot, int dcs_slot)
+{
+	uint16_t tdme, spks, dcs;
+	enum Tfa98xx_Error err;
+	enum tfa_error ret;
+	int vol;
+
+	if (tfa_dev_get_tdm_sink_add(tfa, &tdme, &spks, &dcs))
+		return tfa_error_bad_param;
+
+	if (tfa_get_bf(tfa, spks) == spks_slot && tfa_get_bf(tfa, dcs) == dcs_slot)
+		return tfa_error_ok;
+
+	vol = TFA_GET_BF(tfa, VOL);
+	if (vol < 0)
+		return tfa_error_device;
+
+	tfa_ramp_volume(tfa, vol, TFA_VOL_MUTED);
+	err = tfa98xx_set_mute(tfa, Tfa98xx_Mute_Amplifier);
+	if (err != Tfa98xx_Error_Ok) {
+		TFA_SET_BF(tfa, VOL, vol);
+		return tfa_error_device;
+	}
+
+	tfa98xx_powerdown(tfa, 1);
+	ret = tfa_dev_set_tdm_sink_slots(tfa, spks_slot, dcs_slot);
+	tfa98xx_powerdown(tfa, 0);
+
+	err = tfa98xx_set_mute(tfa, Tfa98xx_Mute_Off);
+	tfa_ramp_volume(tfa, TFA_VOL_MUTED, vol);
+	if (err != Tfa98xx_Error_Ok)
+		return tfa_error_device;
+
+	return ret;
 }
 int tfa_dev_set_tdm_bitwidth(struct tfa_device* tfa, int width)/*SACAS-26*/
 {

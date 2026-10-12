@@ -34,6 +34,10 @@
 #define TFA98XX_FLAG_LP_MODES	        (1 << 7)
 #define TFA98XX_FLAG_TDM_DEVICE         (1 << 8)
 #define TFA98XX_FLAG_ADAPT_NOISE_MODE   (1 << 9)
+#define TFA98XX_FLAG_SELECTED           (1 << 16) /* enabled by TFA_CHIP_SELECTOR */
+
+/* screen rotations selectable with TFA9894_CHAN_SELECTOR */
+#define TFA98XX_NUM_ROTATIONS		4
 
 #define TFA98XX_NUM_RATES		9
 
@@ -94,7 +98,7 @@ struct tfa98xx {
 	u16 rev;
 	int audio_mode;
 	struct tfa98xx_firmware fw;
-	char *fw_name;
+	const char *fw_name;
 	int rate;
 	wait_queue_head_t wq;
 	struct device *dev;
@@ -114,6 +118,8 @@ struct tfa98xx {
 	int power_gpio;
 	int irq_gpio;
 	enum tfa_reset_polarity reset_polarity; 
+	bool has_rotation_slots;
+	u32 rotation_slots[TFA98XX_NUM_ROTATIONS][2]; /* speaker, DCS TDM slot */
 	struct list_head list;
 	struct tfa_device *tfa;
 	int vstep;

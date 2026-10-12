@@ -149,6 +149,7 @@ struct tfa_device {
 	int needs_reset; /**< add the reset trigger for SetAlgoParams and SetMBDrc commands */
 	struct kmem_cache *cachep;	/**< Memory allocator handle */
 	char fw_itf_ver[4];          /* Firmware ITF version */
+	int tdm_sink_slot[2]; /**< TDM slot of sink 0 (speaker) and 1 (DCS) set by tfa_dev_start, -1: as in the container */
 };
 
 /**
@@ -257,6 +258,27 @@ int tfa_dev_set_tdm_bitwidth(struct tfa_device *tfa, int width);
  *  @param tsize = pointer to be filled with TDMSSIZE address
  */
 void tfa_dev_get_tdm_add(struct tfa_device* tfa,uint16_t *tdme,uint16_t * tnbck,uint16_t *tslln,uint16_t *tsize);
+/**
+ * Select the TDM slots feeding the speaker (sink 0) and DCS (sink 1) inputs.
+ * The interface is stopped while the slots change, so this is meant for a
+ * device that is not playing: tfa_dev_start uses it to apply tdm_sink_slot.
+ * Only supported on the TFA9894.
+ *  @param tfa struct = pointer to context of this device instance
+ *  @param spks_slot = TDM slot for the speaker input
+ *  @param dcs_slot = TDM slot for the DCS input
+ *  @return tfa_error enum
+ */
+enum tfa_error tfa_dev_set_tdm_sink_slots(struct tfa_device *tfa, int spks_slot, int dcs_slot);
+/**
+ * Move a playing device to other speaker/DCS TDM slots: the output is faded
+ * out, muted and powered down around the change, then brought back up.
+ * Nothing is done if the device already uses these slots.
+ *  @param tfa struct = pointer to context of this device instance
+ *  @param spks_slot = TDM slot for the speaker input
+ *  @param dcs_slot = TDM slot for the DCS input
+ *  @return tfa_error enum
+ */
+enum tfa_error tfa_dev_switch_tdm_sink_slots(struct tfa_device *tfa, int spks_slot, int dcs_slot);
 /**
  *  MTP support functions
  */

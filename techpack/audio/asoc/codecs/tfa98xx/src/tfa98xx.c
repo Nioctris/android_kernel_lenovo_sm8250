@@ -21,6 +21,7 @@
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
 #include <linux/of_gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/firmware.h>
@@ -65,13 +66,15 @@ static int tfa98xx_mixer_profiles = 0; /* number of user selectable profiles */
 static int tfa98xx_mixer_profile = 0;  /* current mixer profile */
 static struct snd_kcontrol_new *tfa98xx_controls;
 static TfaContainer_t *tfa98xx_container = NULL;
+static int tfa98xx_chip_selector = 0;  /* TFA_CHIP_SELECTOR value */
+static int tfa98xx_rotation = -1;      /* TFA9894_CHAN_SELECTOR value, -1: not set */
 
 static int tfa98xx_kmsg_regs = 0;
 static int tfa98xx_ftrace_regs = 0;
 
 static char *fw_name = "tfa98xx.cnt";
 module_param(fw_name, charp, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(fw_name, "TFA98xx DSP firmware (container file) name.");
+MODULE_PARM_DESC(fw_name, "TFA98xx DSP firmware (container file) name, unless set by the DT.");
 
 static int trace_level = 0;
 module_param(trace_level, int, S_IRUGO);
@@ -147,12 +150,35 @@ static enum tfa_error tfa98xx_write_re25(struct tfa_device *tfa, int value)
 	return err;
 }
 
+/*
+ * With a rotation selected, amplifiers that have rotation slots in the DT
+ * take their speaker/DCS TDM slots from it, except in profiles marked
+ * "nonRotation" (calls), which keep the routing of the container.
+ */
+static void tfa98xx_update_tdm_sink_slots(struct tfa98xx *tfa98xx, int prof_idx)
+{
+	struct tfa_device *tfa = tfa98xx->tfa;
+	int rotation = READ_ONCE(tfa98xx_rotation);
+	char *prof_name = tfa_cont_profile_name(tfa98xx, prof_idx);
+
+	if (tfa98xx->has_rotation_slots && rotation >= 0 &&
+		prof_name && !strstr(prof_name, "nonRotation")) {
+		tfa->tdm_sink_slot[0] = tfa98xx->rotation_slots[rotation][0];
+		tfa->tdm_sink_slot[1] = tfa98xx->rotation_slots[rotation][1];
+	} else {
+		tfa->tdm_sink_slot[0] = -1;
+		tfa->tdm_sink_slot[1] = -1;
+	}
+}
+
 /* Wrapper for tfa start */
 static enum tfa_error tfa98xx_tfa_start(struct tfa98xx *tfa98xx, int next_profile, int vstep)
 {
 	enum tfa_error err;
 	ktime_t start_time, stop_time;
 	u64 delta_time;
+
+	tfa98xx_update_tdm_sink_slots(tfa98xx, next_profile);
 
 	start_time = ktime_get_boottime();
 	err = tfa_dev_start(tfa98xx->tfa, next_profile, vstep);
@@ -1420,6 +1446,139 @@ static int tfa98xx_get_cal_ctl(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
+/*
+ * TFA_CHIP_SELECTOR picks the amplifiers that play from the next stream
+ * start on: 0 selects all of them, n (1..4) only the one at container index
+ * n - 1, TFA98XX_CHIP_SELECT_NONE none. Deselected amplifiers are not
+ * powered up. Used by the speaker test paths of the mixer.
+ */
+#define TFA98XX_CHIP_SELECT_NONE	5
+
+static int tfa98xx_info_chip_select_ctl(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_info *uinfo)
+{
+	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
+	uinfo->count = 1;
+	uinfo->value.integer.min = 0;
+	uinfo->value.integer.max = TFA98XX_CHIP_SELECT_NONE;
+
+	return 0;
+}
+
+static int tfa98xx_get_chip_select_ctl(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	mutex_lock(&tfa98xx_mutex);
+	ucontrol->value.integer.value[0] = tfa98xx_chip_selector;
+	mutex_unlock(&tfa98xx_mutex);
+
+	return 0;
+}
+
+static int tfa98xx_set_chip_select_ctl(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	struct tfa98xx *tfa98xx;
+	long selector = ucontrol->value.integer.value[0];
+	int changed;
+
+	if (selector < 0 || selector > TFA98XX_CHIP_SELECT_NONE)
+		return -EINVAL;
+
+	mutex_lock(&tfa98xx_mutex);
+	changed = (selector != tfa98xx_chip_selector);
+	tfa98xx_chip_selector = selector;
+	list_for_each_entry(tfa98xx, &tfa98xx_device_list, list) {
+		if (selector == 0 || selector == tfa98xx->tfa->dev_idx + 1)
+			tfa98xx->flags |= TFA98XX_FLAG_SELECTED;
+		else
+			tfa98xx->flags &= ~TFA98XX_FLAG_SELECTED;
+	}
+	mutex_unlock(&tfa98xx_mutex);
+
+	return changed;
+}
+
+/*
+ * TFA9894_CHAN_SELECTOR follows the screen rotation: every amplifier with
+ * rotation slots in the DT gets the speaker/DCS TDM slots of the selected
+ * rotation. Playing amplifiers are moved right away, the others when they
+ * start. Not allowed while a "nonRotation" profile (call) is active.
+ */
+static int tfa98xx_info_rotation_ctl(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_info *uinfo)
+{
+	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
+	uinfo->count = 1;
+	uinfo->value.integer.min = 0;
+	uinfo->value.integer.max = TFA98XX_NUM_ROTATIONS - 1;
+
+	return 0;
+}
+
+static int tfa98xx_get_rotation_ctl(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	mutex_lock(&tfa98xx_mutex);
+	ucontrol->value.integer.value[0] = max(tfa98xx_rotation, 0);
+	mutex_unlock(&tfa98xx_mutex);
+
+	return 0;
+}
+
+static int tfa98xx_set_rotation_ctl(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,18,0)
+	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
+	struct tfa98xx *tfa98xx = snd_soc_component_get_drvdata(codec);
+#else
+	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct tfa98xx *tfa98xx = snd_soc_codec_get_drvdata(codec);
+#endif
+	long rotation = ucontrol->value.integer.value[0];
+	char *prof_name;
+
+	if (rotation < 0 || rotation >= TFA98XX_NUM_ROTATIONS)
+		return -EINVAL;
+
+	mutex_lock(&tfa98xx_mutex);
+
+	prof_name = tfa_cont_profile_name(tfa98xx, tfa98xx->profile);
+	if (prof_name && strstr(prof_name, "nonRotation")) {
+		mutex_unlock(&tfa98xx_mutex);
+		pr_debug("rotation is fixed in profile %s\n", prof_name);
+		return -EBUSY;
+	}
+
+	if (rotation == tfa98xx_rotation) {
+		mutex_unlock(&tfa98xx_mutex);
+		return 0;
+	}
+	WRITE_ONCE(tfa98xx_rotation, rotation);
+
+	list_for_each_entry(tfa98xx, &tfa98xx_device_list, list) {
+		int ready = 0;
+
+		if (!tfa98xx->has_rotation_slots)
+			continue;
+
+		mutex_lock(&tfa98xx->dsp_lock);
+		tfa98xx_dsp_system_stable(tfa98xx->tfa, &ready);
+		if (ready && tfa98xx->dsp_init == TFA98XX_DSP_INIT_DONE &&
+			tfa_dev_switch_tdm_sink_slots(tfa98xx->tfa,
+				tfa98xx->rotation_slots[rotation][0],
+				tfa98xx->rotation_slots[rotation][1]) != tfa_error_ok)
+			dev_err(tfa98xx->dev, "Failed to move to rotation %ld\n",
+				rotation);
+		mutex_unlock(&tfa98xx->dsp_lock);
+	}
+
+	mutex_unlock(&tfa98xx_mutex);
+
+	return 1;
+}
+
 static int tfa98xx_create_controls(struct tfa98xx *tfa98xx)
 {
 	int prof, nprof, mix_index = 0;
@@ -1433,7 +1592,7 @@ static int tfa98xx_create_controls(struct tfa98xx *tfa98xx)
 	 *  - Stop control on TFA1 devices
 	 */
 
-	nr_controls = 2; /* Profile and stop control */
+	nr_controls = 4; /* Profile, stop, chip and rotation selector */
 
 	if (tfa98xx->flags & TFA98XX_FLAG_CALIBRATION_CTL)
 		nr_controls += 1; /* calibration */
@@ -1544,6 +1703,21 @@ static int tfa98xx_create_controls(struct tfa98xx *tfa98xx)
 		mix_index++;
 	}
 
+	/* Names are fixed: the mixer paths address these on all devices */
+	tfa98xx_controls[mix_index].name = "TFA_CHIP_SELECTOR";
+	tfa98xx_controls[mix_index].iface = SNDRV_CTL_ELEM_IFACE_MIXER;
+	tfa98xx_controls[mix_index].info = tfa98xx_info_chip_select_ctl;
+	tfa98xx_controls[mix_index].get = tfa98xx_get_chip_select_ctl;
+	tfa98xx_controls[mix_index].put = tfa98xx_set_chip_select_ctl;
+	mix_index++;
+
+	tfa98xx_controls[mix_index].name = "TFA9894_CHAN_SELECTOR";
+	tfa98xx_controls[mix_index].iface = SNDRV_CTL_ELEM_IFACE_MIXER;
+	tfa98xx_controls[mix_index].info = tfa98xx_info_rotation_ctl;
+	tfa98xx_controls[mix_index].get = tfa98xx_get_rotation_ctl;
+	tfa98xx_controls[mix_index].put = tfa98xx_set_rotation_ctl;
+	mix_index++;
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,18,0)
 	return snd_soc_add_component_controls(tfa98xx->codec,
 		tfa98xx_controls, mix_index);
@@ -1571,29 +1745,30 @@ static int tfa98xx_append_i2c_address(struct device *dev,
 {
 	char buf[50];
 	int i;
-	int i2cbus = i2c->adapter->nr;
 	int addr = i2c->addr;
+
+	/*
+	 * Only the I2C address is appended, so that the machine driver can name
+	 * the DAIs without depending on the I2C bus numbering.
+	 */
 	if (dai_drv && num_dai > 0)
 		for (i = 0; i < num_dai; i++) {
-			snprintf(buf, 50, "%s-%x-%x", dai_drv[i].name, i2cbus,
-				addr);
+			snprintf(buf, 50, "%s-%x", dai_drv[i].name, addr);
 			dai_drv[i].name = tfa98xx_devm_kstrdup(dev, buf);
 
-			snprintf(buf, 50, "%s-%x-%x",
-				dai_drv[i].playback.stream_name,
-				i2cbus, addr);
+			snprintf(buf, 50, "%s-%x",
+				dai_drv[i].playback.stream_name, addr);
 			dai_drv[i].playback.stream_name = tfa98xx_devm_kstrdup(dev, buf);
 
-			snprintf(buf, 50, "%s-%x-%x",
-				dai_drv[i].capture.stream_name,
-				i2cbus, addr);
+			snprintf(buf, 50, "%s-%x",
+				dai_drv[i].capture.stream_name, addr);
 			dai_drv[i].capture.stream_name = tfa98xx_devm_kstrdup(dev, buf);
 		}
 
 	/* the idea behind this is convert:
 	 * SND_SOC_DAPM_AIF_IN("AIF IN", "AIF Playback", 0, SND_SOC_NOPM, 0, 0),
 	 * into:
-	 * SND_SOC_DAPM_AIF_IN("AIF IN", "AIF Playback-2-36", 0, SND_SOC_NOPM, 0, 0),
+	 * SND_SOC_DAPM_AIF_IN("AIF IN", "AIF Playback-36", 0, SND_SOC_NOPM, 0, 0),
 	 */
 	if (widgets && num_widgets > 0)
 		for (i = 0; i < num_widgets; i++) {
@@ -1601,8 +1776,7 @@ static int tfa98xx_append_i2c_address(struct device *dev,
 				continue;
 			if ((widgets[i].id == snd_soc_dapm_aif_in)
 				|| (widgets[i].id == snd_soc_dapm_aif_out)) {
-				snprintf(buf, 50, "%s-%x-%x", widgets[i].sname,
-					i2cbus, addr);
+				snprintf(buf, 50, "%s-%x", widgets[i].sname, addr);
 				widgets[i].sname = tfa98xx_devm_kstrdup(dev, buf);
 			}
 		}
@@ -2046,11 +2220,11 @@ static void tfa98xx_container_loaded(const struct firmware *cont, void *context)
 	tfa98xx->dsp_fw_state = TFA98XX_DSP_FW_FAIL;
 
 	if (!cont) {
-		pr_err("Failed to read %s\n", fw_name);
+		pr_err("Failed to read %s\n", tfa98xx->fw_name);
 		return;
 	}
 
-	pr_debug("loaded %s - size: %zu\n", fw_name, cont->size);
+	pr_debug("loaded %s - size: %zu\n", tfa98xx->fw_name, cont->size);
 
 	mutex_lock(&tfa98xx_mutex);
 	if (tfa98xx_container == NULL) {
@@ -2175,7 +2349,7 @@ static int tfa98xx_load_container(struct tfa98xx *tfa98xx)
 	tfa98xx->dsp_fw_state = TFA98XX_DSP_FW_PENDING;
 
 	return request_firmware_nowait(THIS_MODULE, FW_ACTION_HOTPLUG,
-		fw_name, tfa98xx->dev, GFP_KERNEL,
+		tfa98xx->fw_name, tfa98xx->dev, GFP_KERNEL,
 		tfa98xx, tfa98xx_container_loaded);
 }
 
@@ -2279,6 +2453,13 @@ static void tfa98xx_dsp_init(struct tfa98xx *tfa98xx)
 		return;
 	}
 
+	if (!(tfa98xx->flags & TFA98XX_FLAG_SELECTED)) {
+		/* stays off, but must not hold back the others' unmute */
+		dev_dbg(&tfa98xx->i2c->dev, "Not selected, skipping DSP power-on\n");
+		sync = true;
+		goto sync_devices;
+	}
+
 	mutex_lock(&tfa98xx->dsp_lock);
 
 	tfa98xx->dsp_init = TFA98XX_DSP_INIT_PENDING;
@@ -2335,6 +2516,7 @@ static void tfa98xx_dsp_init(struct tfa98xx *tfa98xx)
 	}
 	mutex_unlock(&tfa98xx->dsp_lock);
 
+sync_devices:
 	if (sync) {
 		/* check if all devices have started */
 		bool do_sync;
@@ -2350,6 +2532,9 @@ static void tfa98xx_dsp_init(struct tfa98xx *tfa98xx)
 		if (do_sync) {
 			tfa98xx_sync_count = 0;
 			list_for_each_entry(tfa98xx, &tfa98xx_device_list, list) {
+				if (!(tfa98xx->flags & TFA98XX_FLAG_SELECTED))
+					continue;
+
 				mutex_lock(&tfa98xx->dsp_lock);
 				tfa_dev_set_state(tfa98xx->tfa, TFA_STATE_UNMUTE, 0);
 
@@ -2668,14 +2853,9 @@ static int tfa98xx_mute(struct snd_soc_dai *dai, int mute, int stream)
 		else
 			tfa98xx->cstream = 1;
 
-		/* Start DSP */
-#if 1
+		/* Start DSP, before the stream starts */
 		if (tfa98xx->dsp_init != TFA98XX_DSP_INIT_PENDING)
-			queue_delayed_work(tfa98xx->tfa98xx_wq,
-				&tfa98xx->init_work, 0);
-#else
-		tfa98xx_dsp_init(tfa98xx);
-#endif//
+			tfa98xx_dsp_init(tfa98xx);
 	     if(tfa98xx->flags & TFA98XX_FLAG_ADAPT_NOISE_MODE)
 		 	queue_delayed_work(tfa98xx->tfa98xx_wq,
 						&tfa98xx->nmodeupdate_work,
@@ -2886,10 +3066,47 @@ static int tfa98xx_ext_reset(struct tfa98xx *tfa98xx)
 	return 0;
 }
 
+/*
+ * The container file is "firmware-name" or, with a speaker ID line
+ * ("spk-id-gpios"), the "firmware-name" entry indexed by its level: one
+ * tuning per speaker vendor. Without "firmware-name", the fw_name parameter.
+ */
+static int tfa98xx_parse_dt_firmware(struct device *dev, struct tfa98xx *tfa98xx,
+	struct device_node *np)
+{
+	struct gpio_desc *spk_id;
+	int nfw, id = 0;
+
+	nfw = of_property_count_strings(np, "firmware-name");
+	if (nfw <= 0)
+		return 0;
+
+	/* shared by all amplifiers, only held while reading */
+	spk_id = gpiod_get_optional(dev, "spk-id", GPIOD_IN);
+	if (IS_ERR(spk_id))
+		return PTR_ERR(spk_id);
+	if (spk_id) {
+		id = gpiod_get_value_cansleep(spk_id);
+		gpiod_put(spk_id);
+		if (id < 0)
+			return id;
+	}
+
+	if (id >= nfw) {
+		dev_err(dev, "No firmware-name for speaker ID %d\n", id);
+		return -EINVAL;
+	}
+
+	of_property_read_string_index(np, "firmware-name", id, &tfa98xx->fw_name);
+	dev_info(dev, "Speaker ID %d, using %s\n", id, tfa98xx->fw_name);
+
+	return 0;
+}
+
 static int tfa98xx_parse_dt(struct device *dev, struct tfa98xx *tfa98xx,
 	struct device_node *np) {
 	u32 value;
-	int ret;
+	int ret, i;
 	tfa98xx->reset_gpio = of_get_named_gpio(np, "reset-gpio", 0);
 	if (tfa98xx->reset_gpio < 0)
 		dev_dbg(dev, "No reset GPIO provided, will not HW reset device\n");
@@ -2905,6 +3122,26 @@ static int tfa98xx_parse_dt(struct device *dev, struct tfa98xx *tfa98xx,
 	 tfa98xx->reset_polarity = (value == 0) ? LOW : HIGH;
         } 
 	dev_dbg(dev, "reset-polarity:%d\n",tfa98xx->reset_polarity);
+
+	ret = tfa98xx_parse_dt_firmware(dev, tfa98xx, np);
+	if (ret)
+		return ret;
+
+	ret = of_property_read_u32_array(np, "tfa,rotation-tdm-slots",
+		&tfa98xx->rotation_slots[0][0], 2 * TFA98XX_NUM_ROTATIONS);
+	tfa98xx->has_rotation_slots = (ret == 0);
+	if (ret && ret != -EINVAL)
+		dev_err(dev, "Invalid tfa,rotation-tdm-slots: %d\n", ret);
+
+	for (i = 0; tfa98xx->has_rotation_slots && i < TFA98XX_NUM_ROTATIONS; i++) {
+		/* 4-bit slot fields */
+		if (tfa98xx->rotation_slots[i][0] > 15 ||
+			tfa98xx->rotation_slots[i][1] > 15) {
+			dev_err(dev, "Invalid TDM slots for rotation %d\n", i);
+			tfa98xx->has_rotation_slots = false;
+		}
+	}
+
 	return 0;
 }
 
@@ -3058,10 +3295,14 @@ static int tfa98xx_i2c_probe(struct i2c_client *i2c,
 	mutex_init(&tfa98xx->dsp_lock);
 	init_waitqueue_head(&tfa98xx->wq);
 
+	tfa98xx->fw_name = fw_name;
+	tfa98xx->flags |= TFA98XX_FLAG_SELECTED;
+
 	if (np) {
 		ret = tfa98xx_parse_dt(&i2c->dev, tfa98xx, np);
 		if (ret) {
-			dev_err(&i2c->dev, "Failed to parse DT node\n");
+			if (ret != -EPROBE_DEFER)
+				dev_err(&i2c->dev, "Failed to parse DT node\n");
 			return ret;
 		}
 		if (no_start)
@@ -3177,6 +3418,12 @@ static int tfa98xx_i2c_probe(struct i2c_client *i2c,
 			pr_info("Unsupported device revision (0x%x)\n", reg & 0xff);
 			return -EINVAL;
 		}
+
+		/* only the TFA9894 can move its sinks to other TDM slots */
+		if (tfa98xx->has_rotation_slots && (reg & 0xff) != 0x94) {
+			dev_warn(&i2c->dev, "Ignoring rotation slots, not a TFA9894\n");
+			tfa98xx->has_rotation_slots = false;
+		}
 	}
 
 	tfa98xx->tfa = devm_kzalloc(&i2c->dev, sizeof(struct tfa_device), GFP_KERNEL);
@@ -3185,6 +3432,8 @@ static int tfa98xx_i2c_probe(struct i2c_client *i2c,
 
 	tfa98xx->tfa->data = (void *)tfa98xx;
 	tfa98xx->tfa->cachep = tfa98xx_cache;
+	tfa98xx->tfa->tdm_sink_slot[0] = -1;
+	tfa98xx->tfa->tdm_sink_slot[1] = -1;
 
 	/* Modify the stream names, by appending the i2c device address.
 	 * This is used with multicodec, in order to discriminate the devices.
