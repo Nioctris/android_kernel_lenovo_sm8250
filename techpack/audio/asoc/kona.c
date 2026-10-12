@@ -7521,6 +7521,72 @@ err:
 	return ret;
 }
 
+/*
+ * The codecs of a back end link can be given in a subnode of the sound
+ * card, named after the link, in place of the codec it is defined with:
+ *
+ *	pri-tdm-rx-0 {
+ *		link-name = "PRI_TDM_RX_0";
+ *		codec {
+ *			sound-dai = <&amp0>, <&amp1>;
+ *		};
+ *	};
+ */
+static int msm_populate_dai_link_codecs_of_node(struct snd_soc_card *card)
+{
+	struct device *cdev = card->dev;
+	struct snd_soc_dai_link *dai_link;
+	struct device_node *np, *codec_np;
+	const char *link_name;
+	int i, ret = 0;
+
+	for_each_available_child_of_node(cdev->of_node, np) {
+		if (of_property_read_string(np, "link-name", &link_name))
+			continue;
+
+		dai_link = NULL;
+		for (i = 0; i < card->num_links; i++) {
+			if (card->dai_link[i].name &&
+			    !strcmp(card->dai_link[i].name, link_name)) {
+				dai_link = &card->dai_link[i];
+				break;
+			}
+		}
+		if (!dai_link) {
+			dev_err(cdev, "%s: No DAI link %s\n", __func__,
+				link_name);
+			ret = -EINVAL;
+			break;
+		}
+
+		codec_np = of_get_child_by_name(np, "codec");
+		if (!codec_np) {
+			dev_err(cdev, "%s: No codec node for %s\n", __func__,
+				link_name);
+			ret = -EINVAL;
+			break;
+		}
+
+		ret = snd_soc_of_get_dai_link_codecs(cdev, codec_np, dai_link);
+		of_node_put(codec_np);
+		if (ret) {
+			if (ret != -EPROBE_DEFER)
+				dev_err(cdev, "%s: Failed to get codecs of %s: %d\n",
+					__func__, link_name, ret);
+			break;
+		}
+
+		dai_link->codec_name = NULL;
+		dai_link->codec_of_node = NULL;
+		dai_link->codec_dai_name = NULL;
+	}
+
+	if (ret)
+		of_node_put(np);
+
+	return ret;
+}
+
 static int msm_audrx_stub_init(struct snd_soc_pcm_runtime *rtd)
 {
 	int ret = -EINVAL;
@@ -8529,6 +8595,10 @@ static int msm_asoc_machine_probe(struct platform_device *pdev)
 		ret = -EPROBE_DEFER;
 		goto err;
 	}
+
+	ret = msm_populate_dai_link_codecs_of_node(card);
+	if (ret)
+		goto err;
 
 	ret = msm_init_aux_dev(pdev, card);
 	if (ret)
