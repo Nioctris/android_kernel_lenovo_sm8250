@@ -28,7 +28,6 @@
 #define NVT_RAW "nvt_raw"
 #define NVT_DIFF "nvt_diff"
 #define NVT_PEN_DIFF "nvt_pen_diff"
-#define NVT_XIAOMI_LOCKDOWN_INFO "tp_lockdown_info"
 
 #define NORMAL_MODE 0x00
 #define TEST_MODE_2 0x22
@@ -48,8 +47,6 @@ static struct proc_dir_entry *NVT_proc_baseline_entry;
 static struct proc_dir_entry *NVT_proc_raw_entry;
 static struct proc_dir_entry *NVT_proc_diff_entry;
 static struct proc_dir_entry *NVT_proc_pen_diff_entry;
-static struct proc_dir_entry *NVT_proc_xiaomi_lockdown_info_entry;
-extern int dsi_panel_lockdown_info_read(unsigned char *plockdowninfo);
 
 /*******************************************************
 Description:
@@ -837,35 +834,6 @@ static const struct file_operations nvt_pen_diff_fops = {
 };
 #endif
 
-static int nvt_xiaomi_lockdown_info_show(struct seq_file *m, void *v)
-{
-	int ret;
-
-	ret = dsi_panel_lockdown_info_read(ts->lockdown_info);
-	if (ret < 0) {
-		NVT_ERR("can't get lockdown info");
-	} else {
-		seq_printf(m, "0x%02x,0x%02x,0x%02x,0x%02x,0x%02x,0x%02x,0x%02x,0x%02x\n",
-				ts->lockdown_info[0], ts->lockdown_info[1], ts->lockdown_info[2], ts->lockdown_info[3],
-				ts->lockdown_info[4], ts->lockdown_info[5], ts->lockdown_info[6], ts->lockdown_info[7]);
-
-	}
-
-	return 0;
-}
-
-static int32_t nvt_xiaomi_lockdown_info_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, nvt_xiaomi_lockdown_info_show, NULL);
-}
-
-static const struct file_operations nvt_xiaomi_lockdown_info_fops = {
-	.owner = THIS_MODULE,
-	.open = nvt_xiaomi_lockdown_info_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
 
 /*******************************************************
 Description:
@@ -917,14 +885,6 @@ int32_t nvt_extra_proc_init(void)
 		} else {
 			NVT_LOG("create proc/%s Succeeded!\n", NVT_PEN_DIFF);
 		}
-	}
-
-	NVT_proc_xiaomi_lockdown_info_entry = proc_create(NVT_XIAOMI_LOCKDOWN_INFO, 0444, NULL, &nvt_xiaomi_lockdown_info_fops);
-	if (NVT_proc_xiaomi_lockdown_info_entry == NULL) {
-		NVT_ERR("create proc/%s Failed!\n", NVT_XIAOMI_LOCKDOWN_INFO);
-		return -ENOMEM;
-	} else {
-		NVT_LOG("create proc/%s Succeeded!\n", NVT_XIAOMI_LOCKDOWN_INFO);
 	}
 
 	return 0;

@@ -20,6 +20,7 @@
 #include <linux/gpio.h>
 
 #include "nt36xxx.h"
+#include "nt36xxx_lenovo.h"
 
 #if BOOT_UPDATE_FIRMWARE
 
@@ -844,10 +845,15 @@ int32_t nvt_update_firmware(const char *firmware_name)
 	NVT_LOG("Update firmware success! <%ld us>\n",
 			(long) ktime_us_delta(end, start));
 
+	ts->fw_loaded = 1;
+
 	/* Get FW Info */
 	ret = nvt_get_fw_info();
 	if (ret) {
 		NVT_ERR("nvt_get_fw_info failed. (%d)\n", ret);
+	} else {
+		/* The new FW starts out of charger mode. */
+		nvt_lenovo_fw_loaded();
 	}
 
 download_fail:
@@ -872,7 +878,6 @@ return:
 *******************************************************/
 void Boot_Update_Firmware(struct work_struct *work)
 {
-	nvt_match_fw();
 	mutex_lock(&ts->lock);
 	if (nvt_get_dbgfw_status()) {
 		if (nvt_update_firmware(DEFAULT_DEBUG_FW_NAME) < 0) {
@@ -884,6 +889,7 @@ void Boot_Update_Firmware(struct work_struct *work)
 	}
 	nvt_get_fw_info();
 	mutex_unlock(&ts->lock);
-	switch_pen_input_device();
+
+	nvt_restore_cmd();
 }
 #endif /* BOOT_UPDATE_FIRMWARE */

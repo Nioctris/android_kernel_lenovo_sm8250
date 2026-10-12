@@ -30,10 +30,6 @@
 #include <linux/earlysuspend.h>
 #endif
 
-#ifdef CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE
-#include "../xiaomi/xiaomi_touch.h"
-#endif
-
 #include "nt36xxx_mem_map.h"
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
@@ -55,7 +51,6 @@
 #define NVTTOUCH_RST_PIN 980
 #define NVTTOUCH_INT_PIN 943
 
-#define NVT_LOCKDOWN_SIZE 8
 #define PINCTRL_STATE_ACTIVE		"pmx_ts_active"
 #define PINCTRL_STATE_SUSPEND		"pmx_ts_suspend"
 
@@ -101,7 +96,7 @@ extern const uint16_t touch_key_array[TOUCH_KEY_NUM];
 #define PEN_TILT_MAX (60)
 
 /* Enable only when module have tp reset pin and connected to host */
-#define NVT_TOUCH_SUPPORT_HW_RST 0
+#define NVT_TOUCH_SUPPORT_HW_RST 1
 
 //---Customerized func.---
 #define NVT_TOUCH_PROC 1
@@ -133,7 +128,6 @@ extern const uint16_t gesture_key_array[];
 #define NVT_TOUCH_WDT_RECOVERY 1
 
 #define CHECK_PEN_DATA_CHECKSUM 0
-#define NVT_PEN_CONNECT_STRATEGY
 
 #if BOOT_UPDATE_FIRMWARE
 #define SIZE_4KB 4096
@@ -144,66 +138,17 @@ extern const uint16_t gesture_key_array[];
 #define NVT_FLASH_END_FLAG_ADDR (fw_need_write_size - NVT_FLASH_END_FLAG_LEN)
 #endif
 
-enum nvt_ic_state {
-	NVT_IC_SUSPEND_IN,
-	NVT_IC_SUSPEND_OUT,
-	NVT_IC_RESUME_IN,
-	NVT_IC_RESUME_OUT,
-	NVT_IC_INIT,
-};
-
-struct nvt_config_info {
-	u8 tp_vendor;
-	u8 tp_color;
-	u8 display_maker;
-	u8 glass_vendor;
-	const char *nvt_fw_name;
-	const char *nvt_mp_name;
-	const char *nvt_limit_name;
-};
-
 struct nvt_ts_data {
 	struct spi_device *client;
 	struct input_dev *input_dev;
 	struct delayed_work nvt_fwu_work;
-	struct delayed_work nvt_lockdown_work;
-	struct mutex power_supply_lock;
-	struct work_struct power_supply_work;
-	struct notifier_block power_supply_notifier;
-	int is_usb_exist;
-	int db_wakeup;
-#if defined(NVT_PEN_CONNECT_STRATEGY)
-	struct work_struct pen_charge_state_change_work;
-	struct notifier_block pen_charge_state_notifier;
-	bool pen_bluetooth_connect;
-	bool pen_charge_connect;
-	bool game_mode_enable;
-	struct device *dev;
-	int pen_count;
-	bool pen_shield_flag;
-#endif
-	struct mutex pen_switch_lock;
-	int ic_state;
-	int gesture_command_delayed;
 	bool dev_pm_suspend;
 	struct completion dev_pm_suspend_completion;
 	uint16_t addr;
 	int8_t phys[32];
-#if defined(CONFIG_DRM_PANEL)
 	struct notifier_block drm_panel_notif;
-#elif defined(_MSM_DRM_NOTIFY_H_)
-	struct notifier_block drm_notif;
-#elif defined(CONFIG_FB)
-	struct notifier_block fb_notif;
-#elif defined(CONFIG_HAS_EARLYSUSPEND)
-	struct early_suspend early_suspend;
-#endif
-	uint32_t config_array_size;
-	struct nvt_config_info *config_array;
 	const char *fw_name;
 	const char *mp_name;
-	bool lkdown_readed;
-	u8 lockdown_info[NVT_LOCKDOWN_SIZE];
 	uint8_t fw_ver;
 	uint8_t x_num;
 	uint8_t y_num;
@@ -212,11 +157,6 @@ struct nvt_ts_data {
 	uint8_t max_touch_num;
 	uint8_t max_button_num;
 	uint32_t int_trigger_type;
-#ifdef CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE
-	u32 gamemode_config[3][5];
-	struct workqueue_struct *set_touchfeature_wq;
-	struct work_struct set_touchfeature_work;
-#endif
 	int32_t irq_gpio;
 	uint32_t irq_flags;
 	int32_t reset_gpio;
@@ -230,34 +170,39 @@ struct nvt_ts_data {
 	uint8_t *xbuf;
 	struct mutex xbuf_lock;
 	bool irq_enabled;
+	bool irq_wake_enabled;
 	bool pen_support;
 	bool stylus_resol_double;
 	bool fw_debug;
 	uint8_t x_gang_num;
 	uint8_t y_gang_num;
 	uint8_t debug_flag;
-	struct input_dev *pen_input_dev;
-	bool pen_input_dev_enable;
-	int8_t pen_phys[32];
 	int result_type;
-	int panel_index;
-#ifdef CONFIG_TOUCHSCREEN_NVT_DEBUG_FS
-	struct dentry *debugfs;
-#endif
+	struct input_dev *pen_input_dev;
+	int8_t pen_phys[32];
 	uint32_t chip_ver_trim_addr;
 	uint32_t swrst_sif_addr;
 	uint32_t crc_err_flag_addr;
-#ifdef CONFIG_MTK_SPI
-	struct mt_chip_conf spi_ctrl;
-#endif
-#ifdef CONFIG_SPI_MT65XX
-    struct mtk_chip_config spi_ctrl;
-#endif
 	struct pinctrl *ts_pinctrl;
 	struct pinctrl_state *pinctrl_state_active;
 	struct pinctrl_state *pinctrl_state_suspend;
 	struct workqueue_struct *event_wq;
 	struct work_struct resume_work;
+
+	/* Lenovo TB371FC, see nt36xxx_lenovo.c */
+	struct workqueue_struct *charger_wq;
+	struct work_struct charger_work;
+	struct notifier_block charger_notif;
+	int usb_plug_status;
+	int fw_loaded;
+	int32_t edge_reject;
+	uint16_t grid_zone[4];
+	uint8_t game_mode;
+	uint8_t pen_state;
+	uint8_t pen_type;
+	uint8_t fw_pen_mode;
+	uint8_t pen_charging;
+	struct work_struct restore_cmd_work;
 };
 
 #if NVT_TOUCH_PROC
@@ -323,5 +268,7 @@ bool nvt_get_dbgfw_status(void);
 #if NVT_TOUCH_ESD_PROTECT
 extern void nvt_esd_check_enable(uint8_t enable);
 #endif /* #if NVT_TOUCH_ESD_PROTECT */
-int switch_pen_input_device(void);
+int32_t nvt_charger_init(void);
+void nvt_charger_deinit(void);
+void nvt_lenovo_fw_loaded(void);
 #endif /* _LINUX_NVT_TOUCH_H */
