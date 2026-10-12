@@ -3925,20 +3925,21 @@ static void smblib_reg_work(struct work_struct *work)
 					&val);
 		typec_orientation = val.intval;
 
-		power_supply_get_property(chg->bms_psy,
-					POWER_SUPPLY_PROP_RESISTANCE,
-					&val);
-		resistance= val.intval;
+		/* No "bms" supply on boards without the PMIC fuel gauge. */
+		resistance = esr_uohms_nominal = esr_uohms_actual = 0;
+		if (chg->bms_psy) {
+			power_supply_get_property(chg->bms_psy,
+					POWER_SUPPLY_PROP_RESISTANCE, &val);
+			resistance = val.intval;
 
-		power_supply_get_property(chg->bms_psy,
-					POWER_SUPPLY_PROP_ESR_NOMINAL,
-					&val);
-		esr_uohms_nominal= val.intval;
+			power_supply_get_property(chg->bms_psy,
+					POWER_SUPPLY_PROP_ESR_NOMINAL, &val);
+			esr_uohms_nominal = val.intval;
 
-		power_supply_get_property(chg->bms_psy,
-                                        POWER_SUPPLY_PROP_ESR_ACTUAL,
-                                        &val);
-                esr_uohms_actual= val.intval;
+			power_supply_get_property(chg->bms_psy,
+					POWER_SUPPLY_PROP_ESR_ACTUAL, &val);
+			esr_uohms_actual = val.intval;
+		}
 
 		smblib_dbg(chg, PR_OEM,	"ICL settle value[%d], usbin adc current[%d], vbusin adc vol[%d]\n, "
 					"resistance [%d], esr_nominal [%d], esr_actual [%d]\n",icl_settle, usb_cur_in,
