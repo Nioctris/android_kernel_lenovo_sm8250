@@ -1,0 +1,1 @@
+obj-$(CONFIG_NFC_NXP_CTN730) += ctn730.o

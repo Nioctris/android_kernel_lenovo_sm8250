@@ -1,0 +1,7 @@
+config NFC_NXP_CTN730
+	tristate "NXP CTN730 stylus wireless charger"
+	depends on I2C && OF
+	help
+	  Driver for the NXP CTN730 NFC wireless charger that charges the
+	  stylus of the Lenovo TB371FC and reports its attachment, charge
+	  state and battery level.
