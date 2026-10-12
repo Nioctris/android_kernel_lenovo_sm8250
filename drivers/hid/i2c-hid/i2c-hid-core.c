@@ -38,7 +38,12 @@
 #include <linux/mutex.h>
 #include <linux/acpi.h>
 #include <linux/of.h>
+#include <linux/of_gpio.h>
+#include <linux/gpio.h>
 #include <linux/regulator/consumer.h>
+#if IS_ENABLED(CONFIG_DRM)
+#include <drm/drm_notifier_mi.h>
+#endif
 
 #include <linux/platform_data/i2c-hid.h>
 
@@ -164,6 +169,20 @@ struct i2c_hid {
 	struct mutex		reset_lock;
 
 	unsigned long		sleep_delay;
+
+	/* Lenovo keyboard MCU, see i2c_hid_kb_*() */
+	bool			kb_mcu;
+	int			kb_rst_gpio;
+	int			kb_wake_gpio;
+	struct mutex		kb_lock;
+	bool			kb_asleep;
+	bool			kb_screen_on;
+	bool			kb_inputs;	/* HID inputs connected */
+	bool			kb_state_valid;
+	u8			kb_state;
+	u16			kb_keys;	/* special keys held down */
+	struct input_dev	*kb_wake_input;
+	struct notifier_block	kb_panel_nb;
 };
 
 static const struct i2c_hid_quirks {
@@ -486,6 +505,404 @@ out_unlock:
 	return ret;
 }
 
+/*
+ * Lenovo keyboard MCU
+ *
+ * On the Lenovo TB371FC the keyboard folio is served by an MCU behind the
+ * tablet's keyboard connector. It is held in reset until mcu_rst_gpio is
+ * raised, and wants to know the screen state: before the panel powers down
+ * it gets a "screen off" output report, mcu_resume_gpio goes low and the
+ * device is put to HID sleep; on unblank the reverse. Attach and fold
+ * changes arrive in vendor report 6, and attaching or opening the keyboard
+ * while the screen is off wakes the tablet with a power key press. The
+ * keyboard's inputs exist only while it is attached, and its Lenovo keys
+ * are reported on a separate "keyboard_wakeup_devices" input device.
+ *
+ * Sequences, report formats and key codes follow Lenovo's stock TB371FC
+ * kernel.
+ */
+#define I2C_HID_KB_SCREEN_REPORT_ID	2
+#define I2C_HID_KB_SCREEN_CMD		0x05
+#define I2C_HID_KB_KEYS_REPORT_ID	5
+#define I2C_HID_KB_STATE_REPORT_ID	6
+#define I2C_HID_KB_STATE_ATTACHED	BIT(0)
+#define I2C_HID_KB_STATE_HALL		BIT(1)
+#define I2C_HID_KB_SWITCH_REPORT_ID	7
+#define I2C_HID_KB_PRESENCE_RETRIES	3
+#define I2C_HID_KB_PRESENCE_DELAY_MS	15
+#define I2C_HID_KB_RESET_DELAY_MS	100
+
+static int i2c_hid_kb_screen_report(struct i2c_hid *ihid, bool on)
+{
+	u16 data_reg = le16_to_cpu(ihid->hdesc.wDataRegister);
+	u8 args[] = {
+		data_reg & 0xff, data_reg >> 8,
+		4, 0,				/* length, including itself */
+		on, I2C_HID_KB_SCREEN_CMD,
+	};
+
+	return __i2c_hid_command(ihid->client, &hid_set_report_cmd,
+				 I2C_HID_KB_SCREEN_REPORT_ID, 0x02 /* output */,
+				 args, sizeof(args), NULL, 0);
+}
+
+static void i2c_hid_kb_sleep(struct i2c_hid *ihid)
+{
+	struct device *dev = &ihid->client->dev;
+	int ret;
+
+	mutex_lock(&ihid->kb_lock);
+	ihid->kb_screen_on = false;
+	if (ihid->kb_asleep)
+		goto out;
+
+	ret = i2c_hid_kb_screen_report(ihid, false);
+	if (ret)
+		dev_warn(dev, "keyboard: screen off report failed: %d\n", ret);
+
+	gpio_set_value(ihid->kb_wake_gpio, 0);
+
+	ret = i2c_hid_set_power(ihid->client, I2C_HID_PWR_SLEEP);
+	if (ret)
+		dev_warn(dev, "keyboard: entering sleep failed: %d\n", ret);
+	else
+		ihid->kb_asleep = true;
+out:
+	mutex_unlock(&ihid->kb_lock);
+}
+
+static void i2c_hid_kb_wake(struct i2c_hid *ihid)
+{
+	struct device *dev = &ihid->client->dev;
+	int ret;
+
+	mutex_lock(&ihid->kb_lock);
+	ihid->kb_screen_on = true;
+	if (!ihid->kb_asleep)
+		goto out;
+
+	gpio_set_value(ihid->kb_wake_gpio, 1);
+
+	ret = i2c_hid_set_power(ihid->client, I2C_HID_PWR_ON);
+	if (ret) {
+		dev_warn(dev, "keyboard: power on failed: %d\n", ret);
+		goto out;
+	}
+	ihid->kb_asleep = false;
+
+	ret = i2c_hid_kb_screen_report(ihid, true);
+	if (ret)
+		dev_warn(dev, "keyboard: screen on report failed: %d\n", ret);
+out:
+	mutex_unlock(&ihid->kb_lock);
+}
+
+/* Keyboard firmware speaking Lenovo's Spinel protocol: V04, V02/V03. */
+static bool i2c_hid_kb_is_spinel(u16 vid, u16 pid)
+{
+	return (vid == USB_VENDOR_ID_LENOVO && pid == 0x6175) ||
+	       (vid == 0x04f3 && pid == 0x31a8) ||
+	       (vid == 0x32cd && pid == 0x003a);
+}
+
+/*
+ * Lenovo keys in the consumer report (report 5) and the key codes Lenovo's
+ * kernel reports them with. Byte offsets count from after the report ID.
+ */
+static const struct {
+	u8 byte;
+	u8 bit;
+	u16 code;
+} i2c_hid_kb_special_keys[] = {
+	{ 0, 6, 0x280 },	/* screen lock */
+	{ 0, 7, 0x282 },	/* language switch */
+	{ 1, 0, 0x283 },	/* microphone mute */
+	{ 1, 4, 0x284 },	/* touchpad on/off */
+	{ 2, 1, 0x285 },
+	{ 1, 1, 0x286 },	/* full screen */
+	{ 1, 2, 0x287 },	/* split screen */
+	{ 1, 5, 0x289 },	/* Lenovo Super Connect */
+	{ 1, 6, 0x28a },	/* app 1 */
+	{ 1, 7, 0x28b },	/* app 2 */
+};
+
+#define I2C_HID_KB_SWITCH_ON		0x28e
+#define I2C_HID_KB_SWITCH_OFF		0x28f
+
+static void i2c_hid_kb_tap(struct input_dev *input, unsigned int code)
+{
+	input_report_key(input, code, 1);
+	input_sync(input);
+	input_report_key(input, code, 0);
+	input_sync(input);
+}
+
+static void i2c_hid_kb_special_keys_report(struct i2c_hid *ihid, u32 size)
+{
+	const u8 *data = ihid->inbuf + 3;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(i2c_hid_kb_special_keys); i++) {
+		u8 byte = i2c_hid_kb_special_keys[i].byte;
+		bool down;
+
+		if (3 + byte >= size)
+			continue;
+
+		down = data[byte] & BIT(i2c_hid_kb_special_keys[i].bit);
+		if (down == !!(ihid->kb_keys & BIT(i)))
+			continue;
+
+		if (down)
+			ihid->kb_keys |= BIT(i);
+		else
+			ihid->kb_keys &= ~BIT(i);
+
+		input_report_key(ihid->kb_wake_input,
+				 i2c_hid_kb_special_keys[i].code, down);
+		input_sync(ihid->kb_wake_input);
+	}
+}
+
+/* Make the keyboard's inputs follow the attach state, as stock does. */
+static void i2c_hid_kb_update_inputs(struct i2c_hid *ihid, bool attached)
+{
+	struct hid_device *hid = ihid->hid;
+
+	if (attached && !ihid->kb_inputs) {
+		if (!hidinput_connect(hid, 0))
+			ihid->kb_inputs = true;
+	} else if (!attached && ihid->kb_inputs) {
+		hidinput_disconnect(hid);
+		ihid->kb_inputs = false;
+		ihid->kb_keys = 0;
+	}
+}
+
+/*
+ * Handle the keyboard MCU's reports. Returns false when the report must
+ * not reach HID: a Spinel keyboard that is not attached has no inputs.
+ */
+static bool i2c_hid_kb_input(struct i2c_hid *ihid, u32 size)
+{
+	u16 vid = le16_to_cpu(ihid->hdesc.wVendorID);
+	u16 pid = le16_to_cpu(ihid->hdesc.wProductID);
+	bool spinel = i2c_hid_kb_is_spinel(vid, pid);
+	u8 id = ihid->inbuf[2];
+
+	/* The IRQ is live before i2c_hid_kb_init() has run. */
+	if (!ihid->kb_mcu || !ihid->kb_wake_input || size < 4)
+		return true;
+
+	if (id == I2C_HID_KB_STATE_REPORT_ID) {
+		u8 state = ihid->inbuf[3];
+
+		ihid->kb_state = state;
+		ihid->kb_state_valid = true;
+
+		if (!ihid->kb_screen_on && (state & I2C_HID_KB_STATE_ATTACHED))
+			i2c_hid_kb_tap(ihid->kb_wake_input, KEY_POWER);
+
+		if (spinel)
+			i2c_hid_kb_update_inputs(ihid,
+					state & I2C_HID_KB_STATE_ATTACHED);
+	} else if (id == I2C_HID_KB_SWITCH_REPORT_ID) {
+		i2c_hid_kb_tap(ihid->kb_wake_input,
+			       (ihid->inbuf[3] & BIT(0)) ?
+			       I2C_HID_KB_SWITCH_ON : I2C_HID_KB_SWITCH_OFF);
+	}
+
+	if (!spinel)
+		return true;
+
+	/* Until the MCU has told us, assume the keyboard is attached. */
+	if (ihid->kb_state_valid &&
+	    !(ihid->kb_state & I2C_HID_KB_STATE_ATTACHED))
+		return false;
+
+	if (id == I2C_HID_KB_KEYS_REPORT_ID)
+		i2c_hid_kb_special_keys_report(ihid, size);
+
+	return true;
+}
+
+#if IS_ENABLED(CONFIG_DRM)
+static int i2c_hid_kb_panel_event(struct notifier_block *nb,
+				  unsigned long event, void *data)
+{
+	struct i2c_hid *ihid = container_of(nb, struct i2c_hid, kb_panel_nb);
+	struct mi_drm_notifier *evdata = data;
+	int blank;
+
+	if (!evdata || !evdata->data || evdata->id != MSM_DRM_PRIMARY_DISPLAY)
+		return NOTIFY_DONE;
+
+	blank = *(int *)evdata->data;
+	if (event == MI_DRM_PRE_EVENT_BLANK && blank == MI_DRM_BLANK_POWERDOWN)
+		i2c_hid_kb_sleep(ihid);
+	else if (event == MI_DRM_EVENT_BLANK && blank == MI_DRM_BLANK_UNBLANK)
+		i2c_hid_kb_wake(ihid);
+
+	return NOTIFY_OK;
+}
+#endif
+
+static ssize_t kb_status_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct i2c_hid *ihid = i2c_get_clientdata(to_i2c_client(dev));
+
+	return sprintf(buf, "%d\n",
+		       !!(ihid->kb_state & I2C_HID_KB_STATE_ATTACHED));
+}
+static DEVICE_ATTR_RO(kb_status);
+
+static ssize_t kb_hall_show(struct device *dev,
+			    struct device_attribute *attr, char *buf)
+{
+	struct i2c_hid *ihid = i2c_get_clientdata(to_i2c_client(dev));
+
+	return sprintf(buf, "%d\n", !!(ihid->kb_state & I2C_HID_KB_STATE_HALL));
+}
+static DEVICE_ATTR_RO(kb_hall);
+
+static ssize_t kb_id_show(struct device *dev,
+			  struct device_attribute *attr, char *buf)
+{
+	struct i2c_hid *ihid = i2c_get_clientdata(to_i2c_client(dev));
+
+	return sprintf(buf, "VID:[0x%x],PID:[0x%x]\n",
+		       le16_to_cpu(ihid->hdesc.wVendorID),
+		       le16_to_cpu(ihid->hdesc.wProductID));
+}
+static DEVICE_ATTR_RO(kb_id);
+
+static struct attribute *i2c_hid_kb_attrs[] = {
+	&dev_attr_kb_status.attr,
+	&dev_attr_kb_hall.attr,
+	&dev_attr_kb_id.attr,
+	NULL,
+};
+
+static const struct attribute_group i2c_hid_kb_attr_group = {
+	.attrs = i2c_hid_kb_attrs,
+};
+
+static int i2c_hid_kb_of_probe(struct i2c_client *client,
+			       struct i2c_hid *ihid)
+{
+	struct device_node *np = client->dev.of_node;
+
+	ihid->kb_rst_gpio = of_get_named_gpio(np, "mcu_rst_gpio", 0);
+	ihid->kb_wake_gpio = of_get_named_gpio(np, "mcu_resume_gpio", 0);
+	if (ihid->kb_rst_gpio == -EPROBE_DEFER ||
+	    ihid->kb_wake_gpio == -EPROBE_DEFER)
+		return -EPROBE_DEFER;
+
+	ihid->kb_mcu = gpio_is_valid(ihid->kb_rst_gpio) &&
+		       gpio_is_valid(ihid->kb_wake_gpio);
+	return 0;
+}
+
+/* Take the MCU out of reset and wait until it answers on the bus. */
+static int i2c_hid_kb_enable(struct i2c_hid *ihid)
+{
+	struct i2c_client *client = ihid->client;
+	struct device *dev = &client->dev;
+	int i, ret;
+
+	ret = devm_gpio_request_one(dev, ihid->kb_wake_gpio,
+				    GPIOF_OUT_INIT_HIGH, "mcu_resume");
+	if (ret)
+		return ret;
+
+	ret = devm_gpio_request_one(dev, ihid->kb_rst_gpio,
+				    GPIOF_OUT_INIT_HIGH, "mcu_rst");
+	if (ret)
+		return ret;
+
+	msleep(ihid->pdata.post_power_delay_ms ?: I2C_HID_KB_RESET_DELAY_MS);
+
+	for (i = 0; i < I2C_HID_KB_PRESENCE_RETRIES; i++) {
+		ret = i2c_smbus_read_byte(client);
+		if (ret >= 0)
+			return 0;
+		msleep(I2C_HID_KB_PRESENCE_DELAY_MS);
+	}
+
+	return ret;
+}
+
+static int i2c_hid_kb_init(struct i2c_hid *ihid)
+{
+	struct device *dev = &ihid->client->dev;
+	struct input_dev *input;
+	int i, ret;
+
+	mutex_init(&ihid->kb_lock);
+	ihid->kb_screen_on = true;
+	/* hid_add_device() has connected the inputs. */
+	ihid->kb_inputs = true;
+
+	input = devm_input_allocate_device(dev);
+	if (!input)
+		return -ENOMEM;
+
+	/*
+	 * Named and left without IDs like Lenovo's, so Android applies
+	 * keyboard_wakeup_devices.kl rather than the keyboard's layout.
+	 */
+	input->name = "keyboard_wakeup_devices";
+	input->id.bustype = BUS_I2C;
+	input_set_capability(input, EV_KEY, KEY_POWER);
+	input_set_capability(input, EV_KEY, I2C_HID_KB_SWITCH_ON);
+	input_set_capability(input, EV_KEY, I2C_HID_KB_SWITCH_OFF);
+	for (i = 0; i < ARRAY_SIZE(i2c_hid_kb_special_keys); i++)
+		input_set_capability(input, EV_KEY,
+				     i2c_hid_kb_special_keys[i].code);
+
+	ret = input_register_device(input);
+	if (ret)
+		return ret;
+	ihid->kb_wake_input = input;
+
+	ret = devm_device_add_group(dev, &i2c_hid_kb_attr_group);
+	if (ret)
+		return ret;
+
+	device_init_wakeup(dev, true);
+
+#if IS_ENABLED(CONFIG_DRM)
+	ihid->kb_panel_nb.notifier_call = i2c_hid_kb_panel_event;
+	ret = mi_drm_register_client(&ihid->kb_panel_nb);
+	if (ret)
+		return ret;
+#endif
+
+	return 0;
+}
+
+/* Name the keyboard like Lenovo's kernel does, per keyboard firmware. */
+static void i2c_hid_kb_name(struct i2c_hid *ihid, struct hid_device *hid)
+{
+	u16 vid = hid->vendor, pid = hid->product;
+
+	if (vid == USB_VENDOR_ID_LENOVO && pid == 0x6175)	/* V04 firmware */
+		strlcpy(hid->name, "Lenovo Keyboard Pack for Spinel",
+			sizeof(hid->name));
+	else if (i2c_hid_kb_is_spinel(vid, pid))		/* V02/V03 */
+		snprintf(hid->name, sizeof(hid->name),
+			 "%s %04hX:%04hX Spinel keyboard",
+			 ihid->client->name, vid, pid);
+}
+
+static void i2c_hid_kb_exit(struct i2c_hid *ihid)
+{
+#if IS_ENABLED(CONFIG_DRM)
+	mi_drm_unregister_client(&ihid->kb_panel_nb);
+#endif
+}
+
 static void i2c_hid_get_input(struct i2c_hid *ihid)
 {
 	int ret;
@@ -533,6 +950,9 @@ static void i2c_hid_get_input(struct i2c_hid *ihid)
 	}
 
 	i2c_hid_dbg(ihid, "input: %*ph\n", ret_size, ihid->inbuf);
+
+	if (!i2c_hid_kb_input(ihid, ret_size))
+		return;
 
 	if (test_bit(I2C_HID_STARTED, &ihid->flags))
 		hid_input_report(ihid->hid, HID_INPUT_REPORT, ihid->inbuf + 2,
@@ -1084,6 +1504,10 @@ static int i2c_hid_probe(struct i2c_client *client,
 		ret = i2c_hid_of_probe(client, &ihid->pdata);
 		if (ret)
 			return ret;
+
+		ret = i2c_hid_kb_of_probe(client, ihid);
+		if (ret)
+			return ret;
 	} else if (!platform_data) {
 		ret = i2c_hid_acpi_pdata(client, &ihid->pdata);
 		if (ret)
@@ -1136,6 +1560,16 @@ static int i2c_hid_probe(struct i2c_client *client,
 	pm_runtime_enable(&client->dev);
 	device_enable_async_suspend(&client->dev);
 
+	if (ihid->kb_mcu) {
+		ret = i2c_hid_kb_enable(ihid);
+		if (ret < 0) {
+			dev_err(&client->dev, "keyboard MCU not responding: %d\n",
+				ret);
+			ret = -ENXIO;
+			goto err_pm;
+		}
+	}
+
 	/* Make sure there is something at this address */
 	ret = i2c_smbus_read_byte(client);
 	if (ret < 0) {
@@ -1170,6 +1604,8 @@ static int i2c_hid_probe(struct i2c_client *client,
 
 	snprintf(hid->name, sizeof(hid->name), "%s %04X:%04X",
 		 client->name, (u16)hid->vendor, (u16)hid->product);
+	if (ihid->kb_mcu)
+		i2c_hid_kb_name(ihid, hid);
 	strlcpy(hid->phys, dev_name(&client->dev), sizeof(hid->phys));
 
 	ihid->quirks = i2c_hid_lookup_quirk(hid->vendor, hid->product);
@@ -1179,6 +1615,14 @@ static int i2c_hid_probe(struct i2c_client *client,
 		if (ret != -ENODEV)
 			hid_err(client, "can't add hid device: %d\n", ret);
 		goto err_mem_free;
+	}
+
+	if (ihid->kb_mcu) {
+		ret = i2c_hid_kb_init(ihid);
+		if (ret) {
+			hid_err(client, "keyboard MCU setup failed: %d\n", ret);
+			goto err_mem_free;
+		}
 	}
 
 	if (!(ihid->quirks & I2C_HID_QUIRK_NO_RUNTIME_PM))
@@ -1214,6 +1658,9 @@ static int i2c_hid_remove(struct i2c_client *client)
 	pm_runtime_set_suspended(&client->dev);
 	pm_runtime_put_noidle(&client->dev);
 
+	if (ihid->kb_mcu)
+		i2c_hid_kb_exit(ihid);
+
 	hid = ihid->hid;
 	hid_destroy_device(hid);
 
@@ -1232,7 +1679,10 @@ static void i2c_hid_shutdown(struct i2c_client *client)
 {
 	struct i2c_hid *ihid = i2c_get_clientdata(client);
 
-	i2c_hid_set_power(client, I2C_HID_PWR_SLEEP);
+	if (ihid->kb_mcu)
+		i2c_hid_kb_sleep(ihid);
+	else
+		i2c_hid_set_power(client, I2C_HID_PWR_SLEEP);
 	free_irq(client->irq, ihid);
 }
 
@@ -1323,6 +1773,9 @@ static int i2c_hid_resume(struct device *dev)
 	 */
 	if (ihid->quirks & I2C_HID_QUIRK_RESET_ON_RESUME)
 		ret = i2c_hid_hwreset(client);
+	else if (ihid->kb_mcu && ihid->kb_asleep)
+		/* Screen still off: the keyboard wakes on unblank. */
+		ret = 0;
 	else
 		ret = i2c_hid_set_power(client, I2C_HID_PWR_ON);
 
