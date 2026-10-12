@@ -82,8 +82,12 @@
 #define NVT_PEN_NAME "NVTCapacitivePen"
 
 //---Touch info.---
-#define TOUCH_DEFAULT_MAX_WIDTH 1800
-#define TOUCH_DEFAULT_MAX_HEIGHT 2880
+/*
+ * Panel resolution (portrait), as in Lenovo's TB371FC kernel. Xiaomi's Pad 6
+ * (1800x2880) values scaled touches ~2% short along both axes.
+ */
+#define TOUCH_DEFAULT_MAX_WIDTH 1840
+#define TOUCH_DEFAULT_MAX_HEIGHT 2944
 #define TOUCH_MAX_FINGER_NUM 10
 #define TOUCH_KEY_NUM 0
 #if TOUCH_KEY_NUM > 0
