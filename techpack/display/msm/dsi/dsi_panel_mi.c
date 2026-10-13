@@ -17,6 +17,8 @@
 #include <linux/slab.h>
 #include <linux/gpio.h>
 #include <linux/of_gpio.h>
+#include <linux/proc_fs.h>
+#include <linux/uaccess.h>
 #include <video/mipi_display.h>
 
 #include "sde_kms.h"
@@ -4156,3 +4158,62 @@ exit:
 	return rc;
 }
 
+
+/*
+ * TB371FC bring-up: expose Xiaomi's raw MIPI register access, which this tree
+ * no longer wires up, at /proc/tb371fc_mipi_reg. Write
+ * "<is_read> <read_len> <packet bytes in hex>", e.g. "1 1 06 01 00 01 00 00 01 54"
+ * to read 0x54, then read the file for the result.
+ */
+static ssize_t tb371fc_mipi_reg_write(struct file *file,
+				      const char __user *ubuf, size_t count,
+				      loff_t *pos)
+{
+	char *buf;
+	int rc;
+
+	if (!g_panel || !count || count > PAGE_SIZE)
+		return -EINVAL;
+
+	buf = memdup_user_nul(ubuf, count);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
+
+	rc = dsi_panel_write_mipi_reg(g_panel, buf);
+	kfree(buf);
+
+	return rc ? rc : count;
+}
+
+static ssize_t tb371fc_mipi_reg_read(struct file *file, char __user *ubuf,
+				     size_t count, loff_t *pos)
+{
+	char *buf;
+	ssize_t len;
+
+	if (!g_panel)
+		return -EINVAL;
+
+	buf = kzalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	len = dsi_panel_read_mipi_reg(g_panel, buf);
+	if (len >= 0)
+		len = simple_read_from_buffer(ubuf, count, pos, buf, len);
+	kfree(buf);
+
+	return len;
+}
+
+static const struct file_operations tb371fc_mipi_reg_fops = {
+	.read = tb371fc_mipi_reg_read,
+	.write = tb371fc_mipi_reg_write,
+};
+
+static int __init tb371fc_mipi_reg_init(void)
+{
+	proc_create("tb371fc_mipi_reg", 0600, NULL, &tb371fc_mipi_reg_fops);
+	return 0;
+}
+late_initcall(tb371fc_mipi_reg_init);
