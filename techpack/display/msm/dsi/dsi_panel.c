@@ -5192,6 +5192,51 @@ int dsi_panel_dc_switch(struct dsi_panel *panel)
 	return rc;
 }
 
+/* TB371FC bring-up: dump the ON set and read back 0x54 right after it. */
+static void tb371fc_dbg_on_cmds(struct dsi_panel *panel)
+{
+	struct dsi_panel_cmd_set *set =
+		&panel->cur_mode->priv_info->cmd_sets[DSI_CMD_SET_ON];
+	static const char rd54[] = { 0x06, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x54 };
+	struct dsi_read_config *rc_cfg;
+	bool init = panel->panel_initialized;
+	u32 cnt = 0;
+	int i, rc;
+
+	DSI_INFO("tb371fc: ON set count=%u state=%d\n", set->count, set->state);
+	for (i = 0; i < set->count; i++) {
+		const u8 *b = set->cmds[i].msg.tx_buf;
+
+		DSI_INFO("tb371fc: cmd%02d type=%02x len=%zu last=%d wait=%u %02x %02x %02x\n",
+			 i, set->cmds[i].msg.type, set->cmds[i].msg.tx_len,
+			 set->cmds[i].last_command, set->cmds[i].post_wait_ms,
+			 set->cmds[i].msg.tx_len > 0 ? b[0] : 0,
+			 set->cmds[i].msg.tx_len > 1 ? b[1] : 0,
+			 set->cmds[i].msg.tx_len > 2 ? b[2] : 0);
+	}
+
+	rc_cfg = kzalloc(sizeof(*rc_cfg), GFP_KERNEL);
+	if (!rc_cfg)
+		return;
+	if (dsi_panel_get_cmd_pkt_count(rd54, sizeof(rd54), &cnt) || !cnt ||
+	    dsi_panel_alloc_cmd_packets(&rc_cfg->read_cmd, cnt))
+		goto out;
+	if (dsi_panel_create_cmd_packets(rd54, sizeof(rd54), cnt,
+					 rc_cfg->read_cmd.cmds))
+		goto out_dealloc;
+	rc_cfg->is_read = true;
+	rc_cfg->cmds_rlen = 1;
+	panel->panel_initialized = true;
+	rc = dsi_panel_read_cmd_set(panel, rc_cfg);
+	panel->panel_initialized = init;
+	DSI_INFO("tb371fc: after ON: 0x54 = 0x%02x (rc=%d)\n", rc_cfg->rbuf[0], rc);
+	dsi_panel_destroy_cmd_packets(&rc_cfg->read_cmd);
+out_dealloc:
+	dsi_panel_dealloc_cmd_packets(&rc_cfg->read_cmd);
+out:
+	kfree(rc_cfg);
+}
+
 int dsi_panel_enable(struct dsi_panel *panel)
 {
 	int rc = 0;
@@ -5214,6 +5259,7 @@ int dsi_panel_enable(struct dsi_panel *panel)
 		       panel->name, rc);
 	else
 		panel->panel_initialized = true;
+	tb371fc_dbg_on_cmds(panel);
 
 	if (mi_cfg->gamma_update_flag) {
 		if (mi_cfg->gamma_cfg.update_done_60hz &&
