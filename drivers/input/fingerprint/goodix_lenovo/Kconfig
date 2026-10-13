@@ -1,0 +1,11 @@
+config FINGERPRINT_GOODIX_LENOVO
+	tristate "Goodix TEE fingerprint sensor (Lenovo TB371FC)"
+	depends on INPUT_FINGERPRINT && !FINGERPRINT_GOODIX && !FINGERPRINT_GOODIX_FOD
+	help
+	  Platform driver for the Goodix side-key fingerprint sensor used on
+	  the Lenovo TB371FC. The sensor itself is driven over SPI from the
+	  TEE; this driver owns its supply, reset and interrupt lines and
+	  exposes /dev/goodix_fp plus the netlink event channel used by the
+	  Goodix fingerprint HAL.
+
+	  If unsure, say N.
