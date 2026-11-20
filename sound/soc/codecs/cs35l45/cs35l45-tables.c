@@ -455,7 +455,6 @@ const struct regmap_config cs35l45_i2c_regmap = {
 	.readable_reg = cs35l45_readable_reg,
 	.cache_type = REGCACHE_RBTREE,
 };
-EXPORT_SYMBOL_GPL(cs35l45_i2c_regmap);
 
 const struct regmap_config cs35l45_spi_regmap = {
 	.reg_bits = 32,
@@ -471,7 +470,6 @@ const struct regmap_config cs35l45_spi_regmap = {
 	.readable_reg = cs35l45_readable_reg,
 	.cache_type = REGCACHE_RBTREE,
 };
-EXPORT_SYMBOL_GPL(cs35l45_spi_regmap);
 
 const struct cs35l45_pll_sysclk_config
 		cs35l45_pll_sysclk[CS35L45_MAX_PLL_CONFIGS] = {

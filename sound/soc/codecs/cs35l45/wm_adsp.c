@@ -807,7 +807,7 @@ static inline void wm_adsp_debugfs_clear(struct wm_adsp *dsp)
 }
 #endif
 
-int wm_adsp_fw_get(struct snd_kcontrol *kcontrol,
+int cs35l45_wm_adsp_fw_get(struct snd_kcontrol *kcontrol,
 		   struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
@@ -818,9 +818,8 @@ int wm_adsp_fw_get(struct snd_kcontrol *kcontrol,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(wm_adsp_fw_get);
 
-int wm_adsp_fw_put(struct snd_kcontrol *kcontrol,
+int cs35l45_wm_adsp_fw_put(struct snd_kcontrol *kcontrol,
 		   struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
@@ -850,9 +849,8 @@ int wm_adsp_fw_put(struct snd_kcontrol *kcontrol,
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(wm_adsp_fw_put);
 
-const struct soc_enum wm_adsp_fw_enum[] = {
+const struct soc_enum cs35l45_wm_adsp_fw_enum[] = {
 	SOC_ENUM_SINGLE(0, 0, ARRAY_SIZE(wm_adsp_fw_text), wm_adsp_fw_text),
 	SOC_ENUM_SINGLE(0, 1, ARRAY_SIZE(wm_adsp_fw_text), wm_adsp_fw_text),
 	SOC_ENUM_SINGLE(0, 2, ARRAY_SIZE(wm_adsp_fw_text), wm_adsp_fw_text),
@@ -861,7 +859,6 @@ const struct soc_enum wm_adsp_fw_enum[] = {
 	SOC_ENUM_SINGLE(0, 5, ARRAY_SIZE(wm_adsp_fw_text), wm_adsp_fw_text),
 	SOC_ENUM_SINGLE(0, 6, ARRAY_SIZE(wm_adsp_fw_text), wm_adsp_fw_text),
 };
-EXPORT_SYMBOL_GPL(wm_adsp_fw_enum);
 
 static struct wm_adsp_region const *wm_adsp_find_region(struct wm_adsp *dsp,
 							int type)
@@ -1649,7 +1646,7 @@ struct wm_coeff_parsed_alg {
 	int ncoeff;
 };
 
-int wm_adsp_handle_fw_event(struct wm_adsp *dsp)
+int cs35l45_wm_adsp_handle_fw_event(struct wm_adsp *dsp)
 {
 	struct wm_coeff_ctl *ctl;
 	int ret = 0, serviced = 0;
@@ -1685,7 +1682,6 @@ int wm_adsp_handle_fw_event(struct wm_adsp *dsp)
 
 	return serviced;
 }
-EXPORT_SYMBOL_GPL(wm_adsp_handle_fw_event);
 
 struct wm_coeff_parsed_coeff {
 	int offset;
@@ -2273,7 +2269,7 @@ static struct wm_coeff_ctl *wm_adsp_get_ctl(struct wm_adsp *dsp,
 	return rslt;
 }
 
-int wm_adsp_write_ctl(struct wm_adsp *dsp, const char *name, int type,
+int cs35l45_wm_adsp_write_ctl(struct wm_adsp *dsp, const char *name, int type,
 		      unsigned int alg, void *buf, size_t len)
 {
 	struct wm_coeff_ctl *ctl;
@@ -2313,9 +2309,8 @@ int wm_adsp_write_ctl(struct wm_adsp *dsp, const char *name, int type,
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(wm_adsp_write_ctl);
 
-int wm_adsp_read_ctl(struct wm_adsp *dsp, const char *name, int type,
+int cs35l45_wm_adsp_read_ctl(struct wm_adsp *dsp, const char *name, int type,
 		     unsigned int alg, void *buf, size_t len)
 {
 	struct wm_coeff_ctl *ctl;
@@ -2329,7 +2324,6 @@ int wm_adsp_read_ctl(struct wm_adsp *dsp, const char *name, int type,
 
 	return wm_coeff_read_ctrl(ctl, buf, len);
 }
-EXPORT_SYMBOL_GPL(wm_adsp_read_ctl);
 
 static void wm_adsp_ctl_fixup_base(struct wm_adsp *dsp,
 				  const struct wm_adsp_alg_region *alg_region)
@@ -3097,15 +3091,14 @@ static int wm_adsp_common_init(struct wm_adsp *dsp)
 	return 0;
 }
 
-int wm_adsp1_init(struct wm_adsp *dsp)
+int cs35l45_wm_adsp1_init(struct wm_adsp *dsp)
 {
 	dsp->ops = &wm_adsp1_ops;
 
 	return wm_adsp_common_init(dsp);
 }
-EXPORT_SYMBOL_GPL(wm_adsp1_init);
 
-int wm_adsp1_event(struct snd_soc_dapm_widget *w,
+int cs35l45_wm_adsp1_event(struct snd_soc_dapm_widget *w,
 		   struct snd_kcontrol *kcontrol,
 		   int event)
 {
@@ -3218,7 +3211,6 @@ err_mutex:
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(wm_adsp1_event);
 
 static int wm_adsp2v2_enable_core(struct wm_adsp *dsp)
 {
@@ -3439,7 +3431,7 @@ static int wm_halo_configure_mpu(struct wm_adsp *dsp, unsigned int lock_regions)
 	return regmap_multi_reg_write(dsp->regmap, config, ARRAY_SIZE(config));
 }
 
-int wm_adsp2_set_dspclk(struct snd_soc_dapm_widget *w, unsigned int freq)
+int cs35l45_wm_adsp2_set_dspclk(struct snd_soc_dapm_widget *w, unsigned int freq)
 {
 	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
 	struct wm_adsp *dsps = snd_soc_component_get_drvdata(component);
@@ -3454,9 +3446,8 @@ int wm_adsp2_set_dspclk(struct snd_soc_dapm_widget *w, unsigned int freq)
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(wm_adsp2_set_dspclk);
 
-int wm_adsp2_preloader_get(struct snd_kcontrol *kcontrol,
+int cs35l45_wm_adsp2_preloader_get(struct snd_kcontrol *kcontrol,
 			   struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
@@ -3469,9 +3460,8 @@ int wm_adsp2_preloader_get(struct snd_kcontrol *kcontrol,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(wm_adsp2_preloader_get);
 
-int wm_adsp2_preloader_put(struct snd_kcontrol *kcontrol,
+int cs35l45_wm_adsp2_preloader_put(struct snd_kcontrol *kcontrol,
 			   struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
@@ -3499,7 +3489,6 @@ int wm_adsp2_preloader_put(struct snd_kcontrol *kcontrol,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(wm_adsp2_preloader_put);
 
 static void wm_adsp_stop_watchdog(struct wm_adsp *dsp)
 {
@@ -3513,7 +3502,7 @@ static void wm_halo_stop_watchdog(struct wm_adsp *dsp)
 			   HALO_WDT_EN_MASK, 0);
 }
 
-int wm_adsp_early_event(struct snd_soc_dapm_widget *w,
+int cs35l45_wm_adsp_early_event(struct snd_soc_dapm_widget *w,
 			struct snd_kcontrol *kcontrol, int event)
 {
 	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
@@ -3553,7 +3542,6 @@ int wm_adsp_early_event(struct snd_soc_dapm_widget *w,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(wm_adsp_early_event);
 
 static int wm_adsp2_start_core(struct wm_adsp *dsp)
 {
@@ -3568,7 +3556,7 @@ static void wm_adsp2_stop_core(struct wm_adsp *dsp)
 			   ADSP2_CORE_ENA | ADSP2_START, 0);
 }
 
-int wm_adsp_event(struct snd_soc_dapm_widget *w,
+int cs35l45_wm_adsp_event(struct snd_soc_dapm_widget *w,
 		  struct snd_kcontrol *kcontrol, int event)
 {
 	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
@@ -3666,7 +3654,6 @@ err:
 	mutex_unlock(&dsp->pwr_lock);
 	return ret;
 }
-EXPORT_SYMBOL_GPL(wm_adsp_event);
 
 static int wm_halo_start_core(struct wm_adsp *dsp)
 {
@@ -3705,7 +3692,7 @@ static void wm_halo_stop_core(struct wm_adsp *dsp)
 			   HALO_CORE_SOFT_RESET_MASK, 1);
 }
 
-int wm_adsp2_component_probe(struct wm_adsp *dsp, struct snd_soc_component *component)
+int cs35l45_wm_adsp2_component_probe(struct wm_adsp *dsp, struct snd_soc_component *component)
 {
 	char preload[32];
 
@@ -3720,17 +3707,15 @@ int wm_adsp2_component_probe(struct wm_adsp *dsp, struct snd_soc_component *comp
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(wm_adsp2_component_probe);
 
-int wm_adsp2_component_remove(struct wm_adsp *dsp, struct snd_soc_component *component)
+int cs35l45_wm_adsp2_component_remove(struct wm_adsp *dsp, struct snd_soc_component *component)
 {
 	wm_adsp2_cleanup_debugfs(dsp);
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(wm_adsp2_component_remove);
 
-int wm_adsp2_init(struct wm_adsp *dsp)
+int cs35l45_wm_adsp2_init(struct wm_adsp *dsp)
 {
 	int ret;
 
@@ -3769,9 +3754,8 @@ int wm_adsp2_init(struct wm_adsp *dsp)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(wm_adsp2_init);
 
-int wm_halo_init(struct wm_adsp *dsp, struct mutex *rate_lock)
+int cs35l45_wm_halo_init(struct wm_adsp *dsp, struct mutex *rate_lock)
 {
 	int ret;
 
@@ -3794,9 +3778,8 @@ int wm_halo_init(struct wm_adsp *dsp, struct mutex *rate_lock)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(wm_halo_init);
 
-int wm_vpu_init(struct wm_adsp *vpu)
+int cs35l45_wm_vpu_init(struct wm_adsp *vpu)
 {
 	int ret;
 
@@ -3813,9 +3796,8 @@ int wm_vpu_init(struct wm_adsp *vpu)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(wm_vpu_init);
 
-void wm_adsp2_remove(struct wm_adsp *dsp)
+void cs35l45_wm_adsp2_remove(struct wm_adsp *dsp)
 {
 	struct wm_coeff_ctl *ctl;
 
@@ -3830,7 +3812,6 @@ void wm_adsp2_remove(struct wm_adsp *dsp)
 	kfree(dsp->tx_rate_cache);
 	mutex_destroy(&dsp->pwr_lock);
 }
-EXPORT_SYMBOL_GPL(wm_adsp2_remove);
 
 static inline int wm_adsp_compr_attached(struct wm_adsp_compr *compr)
 {
@@ -3875,7 +3856,7 @@ static void wm_adsp_compr_detach(struct wm_adsp_compr *compr)
 	}
 }
 
-int wm_adsp_compr_open(struct wm_adsp *dsp, struct snd_compr_stream *stream)
+int cs35l45_wm_adsp_compr_open(struct wm_adsp *dsp, struct snd_compr_stream *stream)
 {
 	struct wm_adsp_compr *compr, *tmp;
 	struct snd_soc_pcm_runtime *rtd = stream->private_data;
@@ -3885,22 +3866,22 @@ int wm_adsp_compr_open(struct wm_adsp *dsp, struct snd_compr_stream *stream)
 
 	if (wm_adsp_fw[dsp->fw].num_caps == 0) {
 		adsp_err(dsp, "%s: Firmware does not support compressed API\n",
-			 asoc_rtd_to_codec(rtd, 0)->name);
+			 rtd->codec_dais[0]->name);
 		ret = -ENXIO;
 		goto out;
 	}
 
 	if (wm_adsp_fw[dsp->fw].compr_direction != stream->direction) {
 		adsp_err(dsp, "%s: Firmware does not support stream direction\n",
-			 asoc_rtd_to_codec(rtd, 0)->name);
+			 rtd->codec_dais[0]->name);
 		ret = -EINVAL;
 		goto out;
 	}
 
 	list_for_each_entry(tmp, &dsp->compr_list, list) {
-		if (!strcmp(tmp->name, asoc_rtd_to_codec(rtd, 0)->name)) {
+		if (!strcmp(tmp->name, rtd->codec_dais[0]->name)) {
 			adsp_err(dsp, "%s: Only a single stream supported per dai\n",
-				 asoc_rtd_to_codec(rtd, 0)->name);
+				 rtd->codec_dais[0]->name);
 			ret = -EBUSY;
 			goto out;
 		}
@@ -3914,7 +3895,7 @@ int wm_adsp_compr_open(struct wm_adsp *dsp, struct snd_compr_stream *stream)
 
 	compr->dsp = dsp;
 	compr->stream = stream;
-	compr->name = asoc_rtd_to_codec(rtd, 0)->name;
+	compr->name = rtd->codec_dais[0]->name;
 
 	list_add_tail(&compr->list, &dsp->compr_list);
 
@@ -3925,9 +3906,8 @@ out:
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(wm_adsp_compr_open);
 
-int wm_adsp_compr_free(struct snd_soc_component *component,
+int cs35l45_wm_adsp_compr_free(struct snd_soc_component *component,
 		       struct snd_compr_stream *stream)
 {
 	struct wm_adsp_compr *compr = stream->runtime->private_data;
@@ -3945,7 +3925,6 @@ int wm_adsp_compr_free(struct snd_soc_component *component,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(wm_adsp_compr_free);
 
 static int wm_adsp_compr_check_params(struct snd_compr_stream *stream,
 				      struct snd_compr_params *params)
@@ -4004,7 +3983,7 @@ static inline unsigned int wm_adsp_compr_frag_words(struct wm_adsp_compr *compr)
 	return compr->size.fragment_size / compr->dsp->data_word_size;
 }
 
-int wm_adsp_compr_set_params(struct snd_soc_component *component,
+int cs35l45_wm_adsp_compr_set_params(struct snd_soc_component *component,
 			     struct snd_compr_stream *stream,
 			     struct snd_compr_params *params)
 {
@@ -4030,9 +4009,8 @@ int wm_adsp_compr_set_params(struct snd_soc_component *component,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(wm_adsp_compr_set_params);
 
-int wm_adsp_compr_get_caps(struct snd_soc_component *component,
+int cs35l45_wm_adsp_compr_get_caps(struct snd_soc_component *component,
 			   struct snd_compr_stream *stream,
 			   struct snd_compr_caps *caps)
 {
@@ -4058,7 +4036,6 @@ int wm_adsp_compr_get_caps(struct snd_soc_component *component,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(wm_adsp_compr_get_caps);
 
 static int wm_adsp_read_raw_data_block(struct wm_adsp *dsp, int mem_type,
 				       unsigned int mem_addr,
@@ -4430,7 +4407,7 @@ static int wm_adsp_buffer_get_error(struct wm_adsp_compr_buf *buf)
 	return 0;
 }
 
-int wm_adsp_compr_trigger(struct snd_soc_component *component,
+int cs35l45_wm_adsp_compr_trigger(struct snd_soc_component *component,
 			  struct snd_compr_stream *stream, int cmd)
 {
 	struct wm_adsp_compr *compr = stream->runtime->private_data;
@@ -4479,7 +4456,6 @@ int wm_adsp_compr_trigger(struct snd_soc_component *component,
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(wm_adsp_compr_trigger);
 
 static inline int wm_adsp_buffer_size(struct wm_adsp_compr_buf *buf)
 {
@@ -4531,7 +4507,7 @@ static int wm_adsp_buffer_update_avail(struct wm_adsp_compr_buf *buf)
 	return 0;
 }
 
-int wm_adsp_compr_handle_irq(struct wm_adsp *dsp)
+int cs35l45_wm_adsp_compr_handle_irq(struct wm_adsp *dsp)
 {
 	struct wm_adsp_compr_buf *buf;
 	struct wm_adsp_compr *compr;
@@ -4579,7 +4555,6 @@ out:
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(wm_adsp_compr_handle_irq);
 
 static int wm_adsp_buffer_reenable_irq(struct wm_adsp_compr_buf *buf)
 {
@@ -4601,7 +4576,7 @@ static int wm_adsp_buffer_reenable_irq(struct wm_adsp_compr_buf *buf)
 				    buf->irq_count);
 }
 
-int wm_adsp_compr_pointer(struct snd_soc_component *component,
+int cs35l45_wm_adsp_compr_pointer(struct snd_soc_component *component,
 			  struct snd_compr_stream *stream,
 			  struct snd_compr_tstamp *tstamp)
 {
@@ -4660,7 +4635,6 @@ out:
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(wm_adsp_compr_pointer);
 
 static int wm_adsp_buffer_capture_block(struct wm_adsp_compr *compr, int target)
 {
@@ -4761,7 +4735,7 @@ static int wm_adsp_compr_read(struct wm_adsp_compr *compr,
 	return ntotal;
 }
 
-int wm_adsp_compr_copy(struct snd_soc_component *component,
+int cs35l45_wm_adsp_compr_copy(struct snd_soc_component *component,
 		       struct snd_compr_stream *stream, char __user *buf,
 		       size_t count)
 {
@@ -4780,7 +4754,6 @@ int wm_adsp_compr_copy(struct snd_soc_component *component,
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(wm_adsp_compr_copy);
 
 static void wm_adsp_fatal_error(struct wm_adsp *dsp)
 {
@@ -4794,7 +4767,7 @@ static void wm_adsp_fatal_error(struct wm_adsp *dsp)
 	}
 }
 
-irqreturn_t wm_adsp2_bus_error(int irq, void *data)
+irqreturn_t cs35l45_wm_adsp2_bus_error(int irq, void *data)
 {
 	struct wm_adsp *dsp = (struct wm_adsp *)data;
 	unsigned int val;
@@ -4858,9 +4831,8 @@ error:
 
 	return IRQ_HANDLED;
 }
-EXPORT_SYMBOL_GPL(wm_adsp2_bus_error);
 
-irqreturn_t wm_halo_bus_error(int irq, void *data)
+irqreturn_t cs35l45_wm_halo_bus_error(int irq, void *data)
 {
 	struct wm_adsp *dsp = (struct wm_adsp *)data;
 	struct regmap *regmap = dsp->regmap;
@@ -4915,9 +4887,8 @@ exit_unlock:
 
 	return IRQ_HANDLED;
 }
-EXPORT_SYMBOL_GPL(wm_halo_bus_error);
 
-irqreturn_t wm_halo_wdt_expire(int irq, void *data)
+irqreturn_t cs35l45_wm_halo_wdt_expire(int irq, void *data)
 {
 	struct wm_adsp *dsp = data;
 
@@ -4931,7 +4902,6 @@ irqreturn_t wm_halo_wdt_expire(int irq, void *data)
 
 	return IRQ_HANDLED;
 }
-EXPORT_SYMBOL_GPL(wm_halo_wdt_expire);
 
 static struct wm_adsp_ops wm_adsp1_ops = {
 	.validate_version = wm_adsp_validate_version,

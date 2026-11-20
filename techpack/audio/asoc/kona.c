@@ -8298,16 +8298,19 @@ aux_dev_register:
 	}
 
 	for (i = 0; i < codec_aux_dev_cnt; i++) {
-		msm_aux_dev[wsa_max_devs + i].name = NULL;
-		msm_aux_dev[wsa_max_devs + i].codec_name = NULL;
-		msm_aux_dev[wsa_max_devs + i].codec_of_node =
-					aux_cdc_dev_info[i].of_node;
-		msm_aux_dev[wsa_max_devs + i].init =  msm_aux_codec_init;
-		msm_codec_conf[wsa_max_devs + i].dev_name = NULL;
-		msm_codec_conf[wsa_max_devs + i].name_prefix =
-						NULL;
-		msm_codec_conf[wsa_max_devs + i].of_node =
-				aux_cdc_dev_info[i].of_node;
+		struct device_node *node = aux_cdc_dev_info[i].of_node;
+		int index = wsa_max_devs + i;
+
+		msm_aux_dev[index].codec_of_node = node;
+		msm_codec_conf[index].of_node = node;
+		if (of_device_is_compatible(node, "cirrus,cs35l45")) {
+			ret = of_property_read_string(node, "sound-name-prefix",
+						      &msm_codec_conf[index].name_prefix);
+			if (ret)
+				goto err;
+		} else {
+			msm_aux_dev[index].init = msm_aux_codec_init;
+		}
 	}
 
 	card->codec_conf = msm_codec_conf;

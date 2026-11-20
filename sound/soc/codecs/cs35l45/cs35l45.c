@@ -37,7 +37,6 @@ static int cs35l45_gpio_configuration(struct cs35l45_private *cs35l45);
 static void cs35l45_hibernate_work(struct work_struct *work);
 static int cs35l45_activate_ctl(struct cs35l45_private *cs35l45,
 				const char *ctl_name, bool active);
-static int cs35l45_buffer_update_avail(struct cs35l45_private *cs35l45);
 
 struct cs35l45_mixer_cache {
 	unsigned int reg;
@@ -149,7 +148,6 @@ int cs35l45_set_csplmboxcmd(struct cs35l45_private *cs35l45,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(cs35l45_set_csplmboxcmd);
 
 static void cs35l45_dsp_pmu_work(struct work_struct *work)
 {
@@ -188,10 +186,10 @@ static int cs35l45_dsp_loader_ev(struct snd_soc_dapm_widget *w,
 			return -EPERM;
 		}
 
-		wm_adsp_early_event(w, kcontrol, event);
+		cs35l45_wm_adsp_early_event(w, kcontrol, event);
 		break;
 	case SND_SOC_DAPM_POST_PMU:
-		wm_adsp_event(w, kcontrol, event);
+		cs35l45_wm_adsp_event(w, kcontrol, event);
 		break;
 	default:
 		dev_err(cs35l45->dev, "Invalid event = 0x%x\n", event);
@@ -252,8 +250,8 @@ static int cs35l45_dsp_boot_ev(struct snd_soc_dapm_widget *w,
 				   CS35L45_DSP1_STREAM_ARB_MSTR1_CONFIG_0,
 				   CS35L45_DSP1_STREAM_ARB_MSTR0_EN_MASK, 0);
 
-		wm_adsp_early_event(w, kcontrol, event);
-		wm_adsp_event(w, kcontrol, event);
+		cs35l45_wm_adsp_early_event(w, kcontrol, event);
+		cs35l45_wm_adsp_event(w, kcontrol, event);
 
 		regmap_update_bits(cs35l45->regmap, CS35L45_PWRMGT_CTL,
 				   CS35L45_MEM_RDY_MASK, 0);
@@ -894,7 +892,7 @@ static int cs35l45_dsp_apply_reconfig_put(struct snd_kcontrol *kcontrol,
 	if (!ucontrol->value.integer.value[0])
 		return 0;
 
-	ret = wm_adsp_read_ctl(&cs35l45->dsp, "MASTER", WMFW_ADSP2_XM,
+	ret = cs35l45_wm_adsp_read_ctl(&cs35l45->dsp, "MASTER", WMFW_ADSP2_XM,
 			       CS35L45_ALGID_MDSYNC, &buf, sizeof(__be32));
 	if (ret < 0) {
 		dev_err(cs35l45->dev, "Control read error (%d)\n", ret);
@@ -903,7 +901,7 @@ static int cs35l45_dsp_apply_reconfig_put(struct snd_kcontrol *kcontrol,
 
 	is_master = be32_to_cpu(buf);
 
-	ret = wm_adsp_read_ctl(&cs35l45->dsp, "NUM_DEVICES", WMFW_ADSP2_XM,
+	ret = cs35l45_wm_adsp_read_ctl(&cs35l45->dsp, "NUM_DEVICES", WMFW_ADSP2_XM,
 			       CS35L45_ALGID_MDSYNC, &buf, sizeof(__be32));
 	if (ret < 0) {
 		dev_err(cs35l45->dev, "Control read error (%d)\n", ret);
@@ -1058,7 +1056,7 @@ static int cs35l45_do_fast_switch(struct cs35l45_private *cs35l45)
 		}
 	}
 
-	ret = wm_adsp_write_ctl(&cs35l45->dsp, "CSPL_UPDATE_PARAMS_CONFIG",
+	ret = cs35l45_wm_adsp_write_ctl(&cs35l45->dsp, "CSPL_UPDATE_PARAMS_CONFIG",
 				WMFW_ADSP2_YM, CS35L45_ALGID, data_ctl_buf,
 				data_ctl_len * sizeof(__be32));
 	if (ret < 0) {
@@ -1070,7 +1068,7 @@ static int cs35l45_do_fast_switch(struct cs35l45_private *cs35l45)
 		"Wrote %u reg for CSPL_UPDATE_PARAMS_CONFIG\n", data_ctl_len);
 
 #ifdef DEBUG
-	ret = wm_adsp_read_ctl(&cs35l45->dsp, "CSPL_UPDATE_PARAMS_CONFIG",
+	ret = cs35l45_wm_adsp_read_ctl(&cs35l45->dsp, "CSPL_UPDATE_PARAMS_CONFIG",
 			       WMFW_ADSP2_YM, CS35L45_ALGID, data_ctl_buf,
 			       data_ctl_len * sizeof(__be32));
 	if (ret < 0) {
@@ -1083,7 +1081,7 @@ static int cs35l45_do_fast_switch(struct cs35l45_private *cs35l45)
 		dev_dbg(cs35l45->dev, "%u\n", be32_to_cpu(data_ctl_buf[i]));
 #endif
 	cmd_ctl		= cpu_to_be32(CSPL_CMD_UPDATE_PARAM);
-	ret = wm_adsp_write_ctl(&cs35l45->dsp, "CSPL_COMMAND", WMFW_ADSP2_XM,
+	ret = cs35l45_wm_adsp_write_ctl(&cs35l45->dsp, "CSPL_COMMAND", WMFW_ADSP2_XM,
 				CS35L45_ALGID, &cmd_ctl, sizeof(__be32));
 	if (ret < 0) {
 		dev_err(cs35l45->dev, "Failed to write CSPL_COMMAND\n");
@@ -1092,7 +1090,7 @@ static int cs35l45_do_fast_switch(struct cs35l45_private *cs35l45)
 
 	/* Verify CSPL COMMAND */
 	for (i = 0; i < 5; i++) {
-		ret = wm_adsp_read_ctl(&cs35l45->dsp, "CSPL_STATE",
+		ret = cs35l45_wm_adsp_read_ctl(&cs35l45->dsp, "CSPL_STATE",
 				       WMFW_ADSP2_XM, CS35L45_ALGID,
 				       &st_ctl, sizeof(__be32));
 		if (ret < 0) {
@@ -1522,418 +1520,6 @@ static struct snd_soc_dai_driver cs35l45_dai[] = {
 		},
 		.ops = &cs35l45_dai_ops,
 	},
-	{
-		.name = "cs35l45-cpu-dsplog",
-		.capture = {
-			.stream_name = "DSP Log CPU",
-			.channels_min = 1,
-			.channels_max = 1,
-			.rates = CS35L45_RATES,
-			.formats = CS35L45_FORMATS,
-		},
-		.compress_new = &snd_soc_new_compress,
-	},
-	{
-		.name = "cs35l45-dsp-dsplog",
-		.capture = {
-			.stream_name = "DSP Log DSP",
-			.channels_min = 1,
-			.channels_max = 1,
-			.rates = CS35L45_RATES,
-			.formats = CS35L45_FORMATS,
-		},
-	}
-};
-
-static int cs35l45_compr_switch(struct wm_adsp *dsp, int cmd)
-{
-	__be32 cmd_ctl;
-	int ret;
-
-	cmd_ctl = cpu_to_be32(cmd);
-	ret = wm_adsp_write_ctl(dsp, CS35L45_DSP_LOG_ENABLED, WMFW_ADSP2_XM,
-				CS35L45_ALGID_TRACE, &cmd_ctl, sizeof(cmd_ctl));
-	if (ret) {
-		dev_err(dsp->dev, "Failed to write '%x %s' (%d)\n",
-			CS35L45_ALGID_TRACE, CS35L45_DSP_LOG_ENABLED, ret);
-		return ret;
-	}
-
-	return ret;
-}
-
-static void cs35l45_compr_start_work(struct work_struct *work)
-{
-	struct cs35l45_compr *compr =
-		container_of(work, struct cs35l45_compr, start_work);
-	struct wm_adsp *dsp = compr->dsp;
-
-	cs35l45_compr_switch(dsp, 1);
-}
-
-static void cs35l45_compr_stop_work(struct work_struct *work)
-{
-	struct cs35l45_compr *compr =
-		container_of(work, struct cs35l45_compr, stop_work);
-	struct wm_adsp *dsp = compr->dsp;
-
-	cs35l45_compr_switch(dsp, 0);
-}
-
-static int cs35l45_compr_open(struct snd_soc_component *component, struct snd_compr_stream *stream)
-{
-	struct snd_soc_pcm_runtime *rtd = stream->private_data;
-	//struct snd_soc_component *component = snd_soc_rtdcom_lookup(rtd, DRV_NAME);
-	struct cs35l45_private *cs35l45 = snd_soc_component_get_drvdata(component);
-	__be32 buffer_size;
-	int ret;
-
-	if (strcmp(asoc_rtd_to_codec(rtd,0)->name, "cs35l45-dsp-dsplog")) {
-		dev_err(cs35l45->dev,
-			"No suitable compressed stream for DAI '%s'\n",
-			asoc_rtd_to_codec(rtd,0)->name);
-		return -EINVAL;
-	}
-
-	mutex_lock(&cs35l45->dsp.pwr_lock);
-
-	if (stream->direction != SND_COMPRESS_CAPTURE) {
-		dev_err(cs35l45->dev, "Does not support stream direction\n");
-		ret = -EINVAL;
-		goto out;
-	}
-
-	ret = wm_adsp_read_ctl(&cs35l45->dsp, CS35L45_DSP_LOG_BUFFER_SIZE,
-			       WMFW_ADSP2_XM, CS35L45_ALGID_TRACE,
-			       &buffer_size, sizeof(buffer_size));
-	if (ret) {
-		dev_err(cs35l45->dev, "Failed to read '%x %s' (%d)\n",
-			CS35L45_ALGID_TRACE, CS35L45_DSP_LOG_BUFFER_SIZE, ret);
-		ret = -ENODEV;
-		goto out;
-	}
-
-	cs35l45->compr = kzalloc(sizeof(*cs35l45->compr), GFP_KERNEL);
-	if (!cs35l45->compr) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	cs35l45->compr->dsp = &cs35l45->dsp;
-	cs35l45->compr->stream = stream;
-	cs35l45->compr->buffer_size = be32_to_cpu(buffer_size);
-	cs35l45->compr->buffer_count = 0;
-
-	INIT_WORK(&cs35l45->compr->start_work, cs35l45_compr_start_work);
-	INIT_WORK(&cs35l45->compr->stop_work, cs35l45_compr_stop_work);
-
-	stream->runtime->private_data = cs35l45->compr;
-
-out:
-	mutex_unlock(&cs35l45->dsp.pwr_lock);
-	return ret;
-}
-
-static int cs35l45_compr_free(struct snd_soc_component *component, struct snd_compr_stream *stream)
-{
-	struct cs35l45_compr *compr = stream->runtime->private_data;
-	struct wm_adsp *dsp = compr->dsp;
-
-	flush_scheduled_work();
-
-	cancel_work_sync(&compr->start_work);
-	cancel_work_sync(&compr->stop_work);
-
-	mutex_lock(&dsp->pwr_lock);
-
-	kfree(compr->raw_buf);
-	kfree(compr);
-
-	mutex_unlock(&dsp->pwr_lock);
-
-	return 0;
-}
-static int cs35l45_compr_set_params(struct snd_soc_component *component, 
-				    struct snd_compr_stream *stream,
-				    struct snd_compr_params *params)
-{
-	struct cs35l45_compr *compr = stream->runtime->private_data;
-	struct wm_adsp *dsp = compr->dsp;
-	unsigned int size;
-
-	if (params->buffer.fragment_size % CS35L45_DSP_DATA_WORD_SIZE) {
-		dev_err(dsp->dev, "Invalid buffer fragsize=%d fragments=%d\n",
-			params->buffer.fragment_size,
-			params->buffer.fragments);
-
-		return -EINVAL;
-	}
-
-	compr->size = params->buffer;
-
-	dev_dbg(dsp->dev, "fragment_size=%d fragments=%d\n",
-		compr->size.fragment_size, compr->size.fragments);
-
-	size = compr->buffer_size * sizeof(*compr->raw_buf);
-	compr->raw_buf = kmalloc(size, GFP_DMA | GFP_KERNEL);
-	if (!compr->raw_buf)
-		return -ENOMEM;
-
-	compr->sample_rate = params->codec.sample_rate;
-
-	return 0;
-}
-static int cs35l45_compr_get_caps(struct snd_soc_component *component, 
-				  struct snd_compr_stream *stream,
-				  struct snd_compr_caps *caps)
-{
-	caps->codecs[0] = SND_AUDIOCODEC_BESPOKE;
-	caps->num_codecs = 1;
-	caps->direction = SND_COMPRESS_CAPTURE;
-
-	return 0;
-}
-
-static int cs35l45_compr_trigger(struct snd_soc_component *component, struct snd_compr_stream *stream, int cmd)
-{
-	struct cs35l45_compr *compr = stream->runtime->private_data;
-	struct wm_adsp *dsp = compr->dsp;
-	int ret = 0;
-
-	dev_dbg(dsp->dev, "Trigger: %d\n", cmd);
-
-	mutex_lock(&dsp->pwr_lock);
-
-	switch (cmd) {
-	case SNDRV_PCM_TRIGGER_START:
-		schedule_work(&compr->start_work);
-		break;
-	case SNDRV_PCM_TRIGGER_STOP:
-		schedule_work(&compr->stop_work);
-		break;
-	default:
-		ret = -EINVAL;
-		break;
-	}
-
-	mutex_unlock(&dsp->pwr_lock);
-
-	return ret;
-}
-
-static int cs35l45_buffer_update_avail(struct cs35l45_private *cs35l45)
-{
-	__be32 addr;
-	int read_index;
-	int ret;
-
-	ret = wm_adsp_read_ctl(&cs35l45->dsp, CS35L45_DSP_LOG_BUFFER, WMFW_ADSP2_XM,
-			       CS35L45_ALGID_TRACE,
-			       &addr, sizeof(addr));
-	if (ret) {
-		dev_err(cs35l45->dev, "Failed to read '%x %s' (%d)\n",
-			CS35L45_ALGID_TRACE, CS35L45_DSP_LOG_BUFFER, ret);
-		return ret;
-	}
-	read_index = be32_to_cpu(addr);
-
-	if (read_index == cs35l45->compr->last_read_index) {
-		dev_warn(cs35l45->dev, "Avail check on unstarted stream\n");
-		return 0;
-	}
-
-	cs35l45->compr->read_index = read_index;
-	cs35l45->compr->last_read_index = read_index;
-	cs35l45->compr->avail = cs35l45->compr->buffer_size
-			* CS35L45_DSP_DATA_WORD_SIZE;
-
-	dev_dbg(cs35l45->dev, "readindex=0x%x, avail=%d\n",
-		cs35l45->compr->read_index,
-		cs35l45->compr->avail);
-
-	return 0;
-}
-
-static int cs35l45_compr_pointer(struct snd_soc_component *component, 
-				 struct snd_compr_stream *stream,
-				 struct snd_compr_tstamp *tstamp)
-{
-	struct cs35l45_compr *compr = stream->runtime->private_data;
-	struct wm_adsp *dsp = compr->dsp;
-	struct cs35l45_private *cs35l45 =
-		container_of(dsp, struct cs35l45_private, dsp);
-	int ret = 0;
-
-	dev_dbg(dsp->dev, "Pointer request\n");
-
-	mutex_lock(&dsp->pwr_lock);
-
-	if (dsp->fatal_error) {
-		snd_compr_stop_error(stream, SNDRV_PCM_STATE_XRUN);
-		ret = -EIO;
-		goto out;
-	}
-
-	if (compr->buffer_size == 0) {
-		ret = cs35l45_buffer_update_avail(cs35l45);
-		if (ret < 0) {
-			dev_err(dsp->dev, "Error reading avail: %d\n", ret);
-			goto out;
-		}
-	}
-
-	tstamp->copied_total = compr->copied_total;
-	tstamp->copied_total += compr->buffer_size * CS35L45_DSP_DATA_WORD_SIZE;
-	tstamp->sampling_rate = compr->sample_rate;
-
-out:
-	mutex_unlock(&dsp->pwr_lock);
-
-	return ret;
-}
-
-static int cs35l45_dsp_read_data_block(struct cs35l45_private *cs35l45,
-				       int mem_type, unsigned int mem_addr,
-				       unsigned int num_words, u32 *data)
-{
-	struct wm_adsp *dsp = &cs35l45->dsp;
-	struct wm_adsp_region const *mem = NULL;
-	unsigned int reg;
-	int ret, i;
-
-	for (i = 0; i < dsp->num_mems; i++)
-		if (dsp->mem[i].type == mem_type)
-			mem = &dsp->mem[i];
-
-	if (!mem)
-		return -EINVAL;
-
-	reg = dsp->ops->region_to_reg(mem, mem_addr);
-
-	ret = regmap_raw_read(dsp->regmap, reg, data,
-			      sizeof(*data) * num_words);
-	if (ret < 0)
-		return ret;
-
-	return 0;
-}
-
-static void cs35l45_remove_padding(u32 *buf, int nwords)
-{
-	u8 *pack_in = (u8 *)buf;
-	u8 *pack_out = (u8 *)buf;
-	int i;
-
-	/* Remove the padding bytes from the data read from the DSP */
-	for (i = 0; i < nwords; i++) {
-		*pack_out++ = pack_in[3];
-		*pack_out++ = pack_in[2];
-		*pack_out++ = pack_in[1];
-		pack_in += 4;
-	}
-}
-
-static int cs35l45_compr_read(struct cs35l45_compr *compr,
-			      char __user *buf, size_t count)
-{
-	struct wm_adsp *dsp = compr->dsp;
-	struct cs35l45_private *cs35l45 =
-		container_of(dsp, struct cs35l45_private, dsp);
-	int ntotal = 0;
-	int nwords, nbytes;
-	__be32 cmd_ctl;
-	int ret;
-
-	dev_dbg(dsp->dev, "Requested read of %zu bytes\n", count);
-
-	if (dsp->fatal_error) {
-		snd_compr_stop_error(compr->stream, SNDRV_PCM_STATE_XRUN);
-		return -EIO;
-	}
-
-	count /= CS35L45_DSP_DATA_WORD_SIZE;
-
-	do {
-		nwords = compr->avail;
-		if (!nwords)
-			return 0;
-
-		nwords = min_t(int, nwords, count);
-		if (cs35l45->max_quirks_read_nwords != 0)
-			nwords = min(nwords, cs35l45->max_quirks_read_nwords);
-		ret = cs35l45_dsp_read_data_block(cs35l45, WMFW_ADSP2_XM,
-						  compr->read_index, nwords, compr->raw_buf);
-		if (ret) {
-			dev_err(dsp->dev, "Failed to read data from DSP (%d)\n", ret);
-				return ret;
-		}
-
-		cs35l45_remove_padding(compr->raw_buf, nwords);
-
-		nbytes = nwords * CS35L45_DSP_DATA_WORD_SIZE;
-
-		dev_dbg(dsp->dev, "Read %d bytes from compr stream\n", nbytes);
-
-		if (copy_to_user(buf + ntotal, compr->raw_buf, nbytes)) {
-			dev_err(dsp->dev, "Failed to copy data to user: %d, %d\n",
-				ntotal, nbytes);
-			return -EFAULT;
-		}
-
-		/* update avail to account for words read */
-		compr->avail -= nwords;
-		count -= nwords;
-		ntotal += nbytes;
-		compr->read_index += nwords;
-	} while (nwords > 0 && count > 0);
-
-	compr->copied_total += ntotal;
-
-	if (compr->avail <= 0) {
-		/* Write ACK to DSP */
-		cmd_ctl = cpu_to_be32(1);
-		ret = wm_adsp_write_ctl(&cs35l45->dsp,
-					CS35L45_DSP_LOG_TRANSFER_COMPLETED,
-					WMFW_ADSP2_XM, CS35L45_ALGID_TRACE,
-					&cmd_ctl, sizeof(cmd_ctl));
-		if (ret) {
-			dev_err(cs35l45->dev, "Failed to write '%x %s' (%d)\n",
-				CS35L45_ALGID_TRACE, CS35L45_DSP_LOG_TRANSFER_COMPLETED, ret);
-			return ret;
-		}
-	}
-
-	return ntotal;
-}
-
-static int cs35l45_compr_copy(struct snd_soc_component *component, 
-			      struct snd_compr_stream *stream, char __user *buf,
-			      size_t count)
-{
-	struct cs35l45_compr *compr = stream->runtime->private_data;
-	struct wm_adsp *dsp = compr->dsp;
-	int ret;
-
-	mutex_lock(&dsp->pwr_lock);
-
-	if (stream->direction == SND_COMPRESS_CAPTURE)
-		ret = cs35l45_compr_read(compr, buf, count);
-	else
-		ret = -EOPNOTSUPP;
-
-	mutex_unlock(&dsp->pwr_lock);
-
-	return ret;
-}
-
-static const struct snd_compress_ops cs35l145_compr_ops = {
-	.open = cs35l45_compr_open,
-	.free = cs35l45_compr_free,
-	.set_params = cs35l45_compr_set_params,
-	.get_caps = cs35l45_compr_get_caps,
-	.trigger = cs35l45_compr_trigger,
-	.pointer = cs35l45_compr_pointer,
-	.copy = cs35l45_compr_copy,
 };
 
 static int cs35l45_component_set_sysclk(struct snd_soc_component *component,
@@ -1968,7 +1554,7 @@ static int cs35l45_component_probe(struct snd_soc_component *component)
 
 	component->regmap = cs35l45->regmap;
 
-	wm_adsp2_component_probe(&cs35l45->dsp, component);
+	cs35l45_wm_adsp2_component_probe(&cs35l45->dsp, component);
 	cs35l45->component = component;
 
 	/* Add run-time mixer control for fast use case switch */
@@ -1991,7 +1577,7 @@ static void cs35l45_component_remove(struct snd_soc_component *component)
 	struct cs35l45_private *cs35l45 =
 		snd_soc_component_get_drvdata(component);
 
-	wm_adsp2_component_remove(&cs35l45->dsp, component);
+	cs35l45_wm_adsp2_component_remove(&cs35l45->dsp, component);
 }
 
 static const struct snd_soc_component_driver cs35l45_component = {
@@ -2009,7 +1595,6 @@ static const struct snd_soc_component_driver cs35l45_component = {
 	.num_controls = ARRAY_SIZE(cs35l45_aud_controls),
 
 	.name = DRV_NAME,
-	.compress_ops = &cs35l145_compr_ops,
 };
 
 static int cs35l45_get_clk_config(int freq)
@@ -2093,53 +1678,6 @@ static irqreturn_t cs35l45_msm_global_en_assert(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static int cs35l45_compr_handle_irq(struct cs35l45_private *cs35l45,
-				    unsigned int data)
-{
-	struct cs35l45_compr *compr;
-	int ret = 0;
-
-	mutex_lock(&cs35l45->dsp.pwr_lock);
-
-	if (!cs35l45->compr) {
-		ret = -ENODEV;
-		goto out;
-	}
-
-	compr = cs35l45->compr;
-
-	/* If the received count is the same as the previous one, it indicates that
-	 * another MBOX register was written to, which should not be dealt within
-	 * this handler.
-	 */
-	if (data == cs35l45->compr->buffer_count)
-		goto out;
-
-	if (data != cs35l45->compr->buffer_count + 1) {
-		dev_warn(cs35l45->dev, "Buffer count is intermittent: %d", data);
-		if (cs35l45->compr->buffer_count == 0)
-			dev_warn(cs35l45->dev, "Compressed stream is reopened since last IRQ\n");
-		else
-			dev_warn(cs35l45->dev, "Buffer skipped. Last received: %d\n",
-				 cs35l45->compr->buffer_count);
-	}
-	cs35l45->compr->buffer_count = data;
-
-	ret = cs35l45_buffer_update_avail(cs35l45);
-	if (ret < 0) {
-		dev_err(cs35l45->dev, "Error reading avail: %d\n", ret);
-		goto out;
-	}
-
-	if (compr->stream)
-		snd_compr_fragment_elapsed(compr->stream);
-
-out:
-	mutex_unlock(&cs35l45->dsp.pwr_lock);
-
-	return ret;
-}
-
 static int cs35l45_dsp_virt2_mbox3_irq_handle(struct cs35l45_private *cs35l45, unsigned int cmd,
 					      unsigned int data)
 {
@@ -2149,37 +1687,6 @@ static int cs35l45_dsp_virt2_mbox3_irq_handle(struct cs35l45_private *cs35l45, u
 		break;
 	default:
 		dev_err(cs35l45->dev, "MBox 3 event not supported %u\n", cmd);
-		return -EINVAL;
-	}
-
-	return 0;
-}
-
-static int cs35l45_dsp_virt2_mbox4_irq_handle(struct cs35l45_private *cs35l45,
-					      unsigned int data)
-{
-	__be32 enabled;
-	int ret;
-
-	/* Check if DSP log is enabled */
-	ret = wm_adsp_read_ctl(&cs35l45->dsp, CS35L45_DSP_LOG_ENABLED,
-			       WMFW_ADSP2_XM, CS35L45_ALGID_TRACE,
-			       &enabled, sizeof(enabled));
-	if (ret) {
-		dev_err(cs35l45->dev,
-			"Failed to read control '%x %s' (%d)\n",
-			CS35L45_ALGID_TRACE, CS35L45_DSP_LOG_ENABLED, ret);
-		return -EINVAL;
-	}
-
-	if (be32_to_cpu(enabled) == 1) {
-		ret = cs35l45_compr_handle_irq(cs35l45, data);
-		if (ret == -ENODEV) {
-			dev_err(cs35l45->dev, "Spurious DSP log IRQ\n");
-			return -EINVAL;
-		}
-	} else {
-		dev_err(cs35l45->dev, "Spurious DSP log IRQ\n");
 		return -EINVAL;
 	}
 
@@ -2198,18 +1705,10 @@ static irqreturn_t cs35l45_dsp_virt2_mbox_cb(int irq, void *data)
 
 	ret = regmap_read(cs35l45->regmap, CS35L45_DSP_VIRT2_MBOX_3, &mbox_val);
 	if (!ret && mbox_val)
-		ret = cs35l45_dsp_virt2_mbox3_irq_handle(cs35l45, mbox_val & CS35L45_MBOX3_CMD_MASK,
+		cs35l45_dsp_virt2_mbox3_irq_handle(cs35l45, mbox_val & CS35L45_MBOX3_CMD_MASK,
 				(mbox_val & CS35L45_MBOX3_DATA_MASK) >> CS35L45_MBOX3_DATA_SHIFT);
 
-	/* Handle DSP trace log IRQ */
-	ret = regmap_read(cs35l45->regmap, CS35L45_DSP_VIRT2_MBOX_4, &mbox_val);
-	if (!ret && mbox_val != 0) {
-		ret = cs35l45_dsp_virt2_mbox4_irq_handle(cs35l45, mbox_val);
-		if (ret)
-			dev_err(cs35l45->dev, "Spurious DSP MBOX4 IRQ\n");
-	}
-
-	return IRQ_RETVAL(ret);
+	return IRQ_HANDLED;
 }
 
 static irqreturn_t cs35l45_dsp_wdt_expire(int irq, void *data)
@@ -3053,7 +2552,6 @@ int cs35l45_initialize(struct cs35l45_private *cs35l45)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(cs35l45_initialize);
 
 static const struct wm_adsp_region cs35l45_dsp1_regions[] = {
 	{ .type = WMFW_HALO_PM_PACKED,	.base = CS35L45_DSP1_PMEM_0 },
@@ -3083,7 +2581,7 @@ static int cs35l45_dsp_init(struct cs35l45_private *cs35l45)
 	dsp->n_tx_channels = CS35L45_DSP_N_TX_RATES;
 
 	mutex_init(&cs35l45->rate_lock);
-	ret = wm_halo_init(dsp, &cs35l45->rate_lock);
+	ret = cs35l45_wm_halo_init(dsp, &cs35l45->rate_lock);
 
 	for (i = 0; i < CS35L45_DSP_N_RX_RATES; i++)
 		dsp->rx_rate_cache[i] = 0x1;
@@ -3191,14 +2689,13 @@ int cs35l45_probe(struct cs35l45_private *cs35l45)
 
 err_dsp:
 	mutex_destroy(&cs35l45->rate_lock);
-	wm_adsp2_remove(&cs35l45->dsp);
+	cs35l45_wm_adsp2_remove(&cs35l45->dsp);
 err:
 	mutex_destroy(&cs35l45->dsp_power_lock);
 	mutex_destroy(&cs35l45->hb_lock);
 	regulator_bulk_disable(CS35L45_NUM_SUPPLIES, cs35l45->supplies);
 	return ret;
 }
-EXPORT_SYMBOL_GPL(cs35l45_probe);
 
 int cs35l45_remove(struct cs35l45_private *cs35l45)
 {
@@ -3209,12 +2706,11 @@ int cs35l45_remove(struct cs35l45_private *cs35l45)
 	mutex_destroy(&cs35l45->hb_lock);
 	mutex_destroy(&cs35l45->rate_lock);
 	destroy_workqueue(cs35l45->wq);
-	wm_adsp2_remove(&cs35l45->dsp);
+	cs35l45_wm_adsp2_remove(&cs35l45->dsp);
 	regulator_bulk_disable(CS35L45_NUM_SUPPLIES, cs35l45->supplies);
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(cs35l45_remove);
 
 MODULE_DESCRIPTION("ASoC CS35L45 driver");
 MODULE_AUTHOR("James Schulman, Cirrus Logic Inc, <james.schulman@cirrus.com>");
