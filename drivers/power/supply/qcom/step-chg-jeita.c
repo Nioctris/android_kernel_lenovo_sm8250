@@ -49,6 +49,7 @@ struct step_chg_info {
 	bool			config_is_read;
 	bool			step_chg_cfg_valid;
 	bool			sw_jeita_cfg_valid;
+	bool			jeita_fcc_30w_valid;
 	bool			soc_based_step_chg;
 	bool			ocv_based_step_chg;
 	bool			vbat_avg_based_step_chg;
@@ -66,8 +67,10 @@ struct step_chg_info {
 
 	struct step_chg_cfg	*step_chg_config;
 	struct jeita_fcc_cfg	*jeita_fcc_config;
+	struct range_data	jeita_fcc_30w[MAX_STEP_CHG_ENTRIES];
 	struct jeita_fv_cfg	*jeita_fv_config;
 
+	struct votable		*chg_disable_votable;
 	struct votable		*fcc_votable;
 	struct votable		*fv_votable;
 	struct votable		*usb_icl_votable;
@@ -344,6 +347,7 @@ static int get_step_chg_jeita_setting_from_profile(struct step_chg_info *chip)
 		chip->step_chg_cfg_valid = false;
 	}
 
+	chip->jeita_fcc_30w_valid = false;
 	chip->sw_jeita_cfg_valid = true;
 	rc = read_range_data_from_node(profile_node,
 			"qcom,jeita-fcc-ranges",
@@ -353,6 +357,19 @@ static int get_step_chg_jeita_setting_from_profile(struct step_chg_info *chip)
 		pr_debug("Read qcom,jeita-fcc-ranges failed from battery profile, rc=%d\n",
 					rc);
 		chip->sw_jeita_cfg_valid = false;
+	}
+
+	if (of_find_property(profile_node, "qcom,jeita-fcc-ranges-30w", NULL)) {
+		memset(chip->jeita_fcc_30w, 0, sizeof(chip->jeita_fcc_30w));
+		rc = read_range_data_from_node(profile_node,
+				"qcom,jeita-fcc-ranges-30w", chip->jeita_fcc_30w,
+				BATT_HOT_DECIDEGREE_MAX, max_fcc_ma * 1000);
+		if (rc < 0) {
+			pr_err("Invalid 30 W JEITA FCC table: %d\n", rc);
+			chip->sw_jeita_cfg_valid = false;
+			return rc;
+		}
+		chip->jeita_fcc_30w_valid = true;
 	}
 
 	rc = of_property_read_u32_array(profile_node,
@@ -743,6 +760,24 @@ static void handle_jeita_fcc_scaling(struct step_chg_info *chip)
 }
 
 #define JEITA_SUSPEND_HYST_UV		50000
+#define JEITA_HIGH_POWER_SOURCE_MW	45000
+#define JEITA_CHARGE_TEMP_MIN		0
+#define JEITA_CHARGE_TEMP_MAX		500
+
+static struct range_data *jeita_fcc_ranges(struct step_chg_info *chip)
+{
+	union power_supply_propval power;
+
+	if (chip->jeita_fcc_30w_valid &&
+	    (!is_usb_available(chip) ||
+	     power_supply_get_property(chip->usb_psy,
+					POWER_SUPPLY_PROP_PD_POWER_MAX, &power) ||
+	     power.intval < JEITA_HIGH_POWER_SOURCE_MW))
+		return chip->jeita_fcc_30w;
+
+	return chip->jeita_fcc_config->fcc_cfg;
+}
+
 static int handle_jeita(struct step_chg_info *chip)
 {
 	union power_supply_propval pval = {0, };
@@ -761,6 +796,8 @@ static int handle_jeita(struct step_chg_info *chip)
 		handle_jeita_fcc_scaling(chip);
 
 	if (!chip->sw_jeita_enable || !chip->sw_jeita_cfg_valid) {
+		if (chip->chg_disable_votable)
+			vote(chip->chg_disable_votable, JEITA_VOTER, false, 0);
 		if (chip->fcc_votable)
 			vote(chip->fcc_votable, JEITA_VOTER, false, 0);
 		if (chip->fv_votable)
@@ -788,7 +825,18 @@ static int handle_jeita(struct step_chg_info *chip)
 		return rc;
 	}
 
-	rc = get_val(chip->jeita_fcc_config->fcc_cfg,
+	/* The Lenovo profile also stops charging at the outer limits. */
+	if (chip->jeita_fcc_30w_valid) {
+		if (!chip->chg_disable_votable)
+			chip->chg_disable_votable = find_votable("CHG_DISABLE");
+		if (!chip->chg_disable_votable)
+			return -EINVAL;
+		vote(chip->chg_disable_votable, JEITA_VOTER,
+		     pval.intval <= JEITA_CHARGE_TEMP_MIN ||
+		     pval.intval >= JEITA_CHARGE_TEMP_MAX, 0);
+	}
+
+	rc = get_val(jeita_fcc_ranges(chip),
 			chip->jeita_fcc_config->param.rise_hys,
 			chip->jeita_fcc_config->param.fall_hys,
 			chip->jeita_fcc_index,

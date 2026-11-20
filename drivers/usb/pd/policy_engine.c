@@ -887,11 +887,41 @@ static int pd_select_pdo(struct usbpd *pd, int pdo_pos, int uv, int ua)
 	return 0;
 }
 
+/* Return the maximum power advertised by a Source PDO in mW. */
+static unsigned int pd_source_pdo_power_mw(u32 pdo)
+{
+	unsigned int mv, ma;
+
+	switch (PD_SRC_PDO_TYPE(pdo)) {
+	case PD_SRC_PDO_TYPE_FIXED:
+		mv = PD_SRC_PDO_FIXED_VOLTAGE(pdo) * 50;
+		ma = PD_SRC_PDO_FIXED_MAX_CURR(pdo) * 10;
+		break;
+	case PD_SRC_PDO_TYPE_BATTERY:
+		return PD_SRC_PDO_VAR_BATT_MAX(pdo) * 250;
+	case PD_SRC_PDO_TYPE_VARIABLE:
+		mv = PD_SRC_PDO_VAR_BATT_MAX_VOLT(pdo) * 50;
+		ma = PD_SRC_PDO_VAR_BATT_MAX(pdo) * 10;
+		break;
+	case PD_SRC_PDO_TYPE_AUGMENTED:
+		if (PD_APDO_PPS(pdo))
+			return 0;
+		mv = PD_APDO_MAX_VOLT(pdo) * 100;
+		ma = PD_APDO_MAX_CURR(pdo) * 50;
+		break;
+	default:
+		return 0;
+	}
+
+	return mv * ma / 1000;
+}
+
 static int pd_eval_src_caps(struct usbpd *pd)
 {
 	int i;
 	union power_supply_propval val;
 	bool pps_found = false;
+	unsigned int max_power_mw = 0;
 	u32 first_pdo = pd->received_pdos[0];
 
 	if (PD_SRC_PDO_TYPE(first_pdo) != PD_SRC_PDO_TYPE_FIXED) {
@@ -906,6 +936,14 @@ static int pd_eval_src_caps(struct usbpd *pd)
 	val.intval = PD_SRC_PDO_FIXED_USB_SUSP(first_pdo);
 	power_supply_set_property(pd->usb_psy,
 			POWER_SUPPLY_PROP_PD_USB_SUSPEND_SUPPORTED, &val);
+
+	for (i = 0; i < PD_MAX_DATA_OBJ && pd->received_pdos[i]; i++)
+		max_power_mw = max(max_power_mw,
+				   pd_source_pdo_power_mw(pd->received_pdos[i]));
+
+	val.intval = max_power_mw;
+	power_supply_set_property(pd->usb_psy,
+			POWER_SUPPLY_PROP_PD_POWER_MAX, &val);
 
 	/* Check for PPS APDOs */
 	if (pd->spec_rev == USBPD_REV_30) {

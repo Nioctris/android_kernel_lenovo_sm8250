@@ -541,6 +541,7 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(pd_active),
 	POWER_SUPPLY_ATTR(pd_in_hard_reset),
 	POWER_SUPPLY_ATTR(pd_current_max),
+	POWER_SUPPLY_ATTR(pd_power_max),
 	POWER_SUPPLY_ATTR(apdo_max),
 	POWER_SUPPLY_ATTR(power_max),
 	POWER_SUPPLY_ATTR(pd_usb_suspend_supported),

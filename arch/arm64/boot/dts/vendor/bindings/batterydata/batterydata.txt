@@ -110,6 +110,11 @@ Profile data node optional properties:
 			     the low and high thresholds.
 			The threshold values in range should be in ascending
 			and shouldn't overlap. It support 8 ranges at max.
+- qcom,jeita-fcc-ranges-30w: Optional alternate FCC table using the same
+			format as qcom,jeita-fcc-ranges. The Lenovo policy selects
+			it if the USB-PD source advertises less than 45 W or its
+			capacity is unknown. With this table present, software
+			JEITA stops charging at 0 C and below or 50 C and above.
 - qcom,jeita-fv-ranges: Array of tuples in which a tuple describes a range
 			data of sw-jeita FV (float voltage) setting.
 			A range contains following 3 integer elements:

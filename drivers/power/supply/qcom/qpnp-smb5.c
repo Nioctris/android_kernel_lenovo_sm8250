@@ -856,6 +856,7 @@ static enum power_supply_property smb5_usb_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_PD_CURRENT_MAX,
+	POWER_SUPPLY_PROP_PD_POWER_MAX,
 	POWER_SUPPLY_PROP_CURRENT_MAX,
 	POWER_SUPPLY_PROP_TYPE,
 	POWER_SUPPLY_PROP_TYPEC_MODE,
@@ -982,6 +983,10 @@ static int smb5_usb_get_prop(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_PR_SWAP:
 		rc = smblib_get_prop_pr_swap_in_progress(chg, val);
 		break;
+	case POWER_SUPPLY_PROP_PD_POWER_MAX:
+		val->intval = chg->pd_active ?
+			READ_ONCE(chg->pd_power_max_mw) : 0;
+		break;
 	case POWER_SUPPLY_PROP_PD_VOLTAGE_MAX:
 		val->intval = chg->voltage_max_uv;
 		break;
@@ -1092,7 +1097,15 @@ static int smb5_usb_set_prop(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_TYPEC_SRC_RP:
 		rc = smblib_set_prop_typec_select_rp(chg, val);
 		break;
+	case POWER_SUPPLY_PROP_PD_POWER_MAX:
+		if (READ_ONCE(chg->pd_power_max_mw) != val->intval) {
+			WRITE_ONCE(chg->pd_power_max_mw, val->intval);
+			power_supply_changed(psy);
+		}
+		break;
 	case POWER_SUPPLY_PROP_PD_ACTIVE:
+		if (!val->intval)
+			WRITE_ONCE(chg->pd_power_max_mw, 0);
 		rc = smblib_set_prop_pd_active(chg, val);
 		break;
 	case POWER_SUPPLY_PROP_PD_IN_HARD_RESET:
