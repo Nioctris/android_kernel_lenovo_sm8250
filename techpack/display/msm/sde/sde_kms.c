@@ -19,6 +19,7 @@
 
 #define pr_fmt(fmt)	"[drm:%s:%d] " fmt, __func__, __LINE__
 
+#include <drm/drm_atomic_helper.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_fixed.h>
 #include <drm/drm_panel.h>
@@ -104,6 +105,11 @@ static const char * const iommu_ports[] = {
 static bool sdecustom = true;
 module_param(sdecustom, bool, 0400);
 MODULE_PARM_DESC(sdecustom, "Enable customizations for sde clients");
+
+static bool reset_boot_display;
+module_param(reset_boot_display, bool, 0400);
+MODULE_PARM_DESC(reset_boot_display,
+		"Complete continuous splash handoff and disable inherited scanout before the first modeset");
 
 static int sde_kms_hw_init(struct msm_kms *kms);
 static int _sde_kms_mmu_destroy(struct sde_kms *sde_kms);
@@ -2587,6 +2593,8 @@ static int _sde_kms_update_planes_for_cont_splash(struct sde_kms *sde_kms,
 	return 0;
 }
 
+static void sde_kms_finish_splash(struct drm_device *dev);
+
 static int sde_kms_cont_splash_config(struct msm_kms *kms)
 {
 	void *display;
@@ -2737,6 +2745,15 @@ static int sde_kms_cont_splash_config(struct msm_kms *kms)
 		}
 	}
 
+	if (reset_boot_display) {
+		/* Keep the boot framebuffer mapped until SDE takes ownership. */
+		sde_kms_finish_splash(dev);
+		if (!sde_kms->splash_data.num_splash_displays)
+			drm_atomic_helper_shutdown(dev);
+		else
+			DRM_WARN("boot display handoff incomplete\n");
+	}
+
 	return rc;
 }
 
@@ -2856,6 +2873,16 @@ end:
 	drm_modeset_acquire_fini(&ctx);
 }
 
+static void sde_kms_finish_splash(struct drm_device *dev)
+{
+	struct drm_encoder *enc;
+
+	drm_for_each_encoder(enc, dev) {
+		if (sde_encoder_in_cont_splash(enc) && enc->crtc)
+			_sde_kms_null_commit(dev, enc);
+	}
+}
+
 static void _sde_kms_pm_suspend_idle_helper(struct sde_kms *sde_kms,
 	struct device *dev)
 {
@@ -2908,7 +2935,6 @@ static int sde_kms_pm_suspend(struct device *dev)
 	struct drm_device *ddev;
 	struct drm_modeset_acquire_ctx ctx;
 	struct drm_connector *conn;
-	struct drm_encoder *enc;
 	struct drm_connector_list_iter conn_iter;
 	struct drm_atomic_state *state = NULL;
 	struct sde_kms *sde_kms;
@@ -2928,10 +2954,7 @@ static int sde_kms_pm_suspend(struct device *dev)
 	drm_kms_helper_poll_disable(ddev);
 
 	/* if a display stuck in CS trigger a null commit to complete handoff */
-	drm_for_each_encoder(enc, ddev) {
-		if (sde_encoder_in_cont_splash(enc) && enc->crtc)
-			_sde_kms_null_commit(ddev, enc);
-	}
+	sde_kms_finish_splash(ddev);
 
 	/* acquire modeset lock(s) */
 	drm_modeset_acquire_init(&ctx, 0);
