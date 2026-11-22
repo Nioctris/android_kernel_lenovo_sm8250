@@ -496,6 +496,14 @@ config BACKLIGHT_KTZ8866
 	help
 	  If you have a KTZ8866 say Y to enable the backlight driver.
 
+config BACKLIGHT_KTZ8866_TB9707F
+	tristate "KTZ8866 backlight and LCD bias for Lenovo Legion Y700"
+	depends on I2C && REGULATOR
+	select REGMAP_I2C
+	help
+	  Enable the single KTZ8866 that controls the backlight and LCD bias
+	  on the Lenovo Legion Y700 (TB-9707F).
+
 config BACKLIGHT_DUALKTZ8866
 	tristate "Dual KTZ8866 Backlight"
 	depends on I2C

@@ -1146,6 +1146,16 @@ static int dsi_panel_bl_register(struct dsi_panel *panel)
 	case DSI_BACKLIGHT_DCS:
 		break;
 	case DSI_BACKLIGHT_EXTERNAL:
+		if (of_property_read_bool(panel->parent->of_node, "backlight")) {
+			struct backlight_device *bd = of_find_backlight(panel->parent);
+
+			if (IS_ERR(bd))
+				return PTR_ERR(bd);
+			if (!bd)
+				return -EINVAL;
+			bl->raw_bd = bd;
+			break;
+		}
 		rc = dsi_panel_wled_register_a(panel, bl);
 		if (!rc)
 			rc = dsi_panel_wled_register_b(panel, bl_slaver);
@@ -1184,6 +1194,11 @@ static int dsi_panel_bl_unregister(struct dsi_panel *panel)
 	case DSI_BACKLIGHT_DCS:
 		break;
 	case DSI_BACKLIGHT_EXTERNAL:
+		if (bl->raw_bd &&
+		    of_property_read_bool(panel->parent->of_node, "backlight")) {
+			backlight_put(bl->raw_bd);
+			bl->raw_bd = NULL;
+		}
 		break;
 	case DSI_BACKLIGHT_PWM:
 		dsi_panel_pwm_unregister(panel);
