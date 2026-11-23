@@ -2,6 +2,7 @@
 
 #include "kona-v2.1.dtsi"
 #include "kona-tb9707f-display.dtsi"
+#include "kona-tb9707f-touch.dtsi"
 
 / {
 	model = "Qualcomm Technologies, Inc. kona v2.1 SoC";

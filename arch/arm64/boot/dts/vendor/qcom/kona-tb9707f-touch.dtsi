@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+/*
+ * The stock Lenovo overlay describes the NT36523 touch node without a
+ * pinctrl state, so nothing configures its interrupt line. The open-drain
+ * INT needs the pull-up the mainline port uses; without it the host misses
+ * the firmware's events and the firmware watchdog resets every ~10 s.
+ */
+&tlmm {
+	pinctrl-names = "default";
+	pinctrl-0 = <&tb9707f_ts_int_default>;
+
+	tb9707f_ts_int_default: tb9707f_ts_int_default {
+		mux {
+			pins = "gpio39";
+			function = "gpio";
+		};
+
+		config {
+			pins = "gpio39";
+			drive-strength = <8>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
+};
+
+/*
+ * Keep the touch SPI chip select out of the sleep state, as Lenovo's stock
+ * device tree does. Otherwise the CS line becomes a floating GPIO whenever
+ * the idle SPI controller runtime-suspends, the NT36523 sees spurious
+ * transactions and its firmware resets about ten seconds into every idle
+ * period.
+ */
+&qupv3_se14_spi_sleep {
+	mux {
+		pins = "gpio40", "gpio41", "gpio42";
+	};
+
+	config {
+		pins = "gpio40", "gpio41", "gpio42";
+	};
+};
