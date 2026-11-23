@@ -433,7 +433,8 @@ exit:
 	return rc;
 }
 
-#if IS_ENABLED(CONFIG_BACKLIGHT_DUALKTZ8866)
+#if IS_ENABLED(CONFIG_BACKLIGHT_DUALKTZ8866) || \
+	IS_ENABLED(CONFIG_BACKLIGHT_KTZ8866_TB9707F)
 void dualktz8866_lcd_bias(bool on);
 void dualktz8866_bl_config(void);
 #else

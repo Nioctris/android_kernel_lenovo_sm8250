@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include <linux/backlight.h>
+#include <linux/delay.h>
 #include <linux/fb.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
@@ -12,6 +13,9 @@
 #define KTZ8866_BL_BRT_MSB	0x05
 #define KTZ8866_BL_EN		0x08
 #define KTZ8866_LCD_BIAS_CFG1	0x09
+#define KTZ8866_LCD_BOOST	0x0c
+#define KTZ8866_LCD_VPOS	0x0d
+#define KTZ8866_LCD_VNEG	0x0e
 
 #define KTZ8866_BL_ENABLE	BIT(6)
 #define KTZ8866_BL_SINKS	GENMASK(5, 0)
@@ -98,6 +102,52 @@ static int tb9707f_backlight_get(struct backlight_device *backlight)
 	return DIV_ROUND_CLOSEST(level * TB9707F_BL_MAX, KTZ8866_BL_MAX);
 }
 
+/* The only KTZ8866 on the Y700; used by the DSI panel power sequence. */
+static struct backlight_device *tb9707f_bl;
+
+/*
+ * Panel LCD bias, sequenced like Lenovo's stock lcd_set_bias(): program the
+ * boost and +/-5.5 V rails, raise OUTP then OUTN; on the way down drop the
+ * backlight first, then OUTN and OUTP. The NT36523 is a TDDI panel, so this
+ * also powers its touch controller.
+ */
+void dualktz8866_lcd_bias(bool on)
+{
+	struct regmap *regmap;
+
+	if (!tb9707f_bl)
+		return;
+	regmap = bl_get_data(tb9707f_bl);
+
+	if (on) {
+		regmap_write(regmap, KTZ8866_LCD_BOOST, 0x28);
+		regmap_write(regmap, KTZ8866_LCD_VPOS, 0x1e);
+		regmap_write(regmap, KTZ8866_LCD_VNEG, 0x1e);
+		regmap_write(regmap, KTZ8866_LCD_BIAS_CFG1, 0x9c);
+		usleep_range(5000, 5100);
+		regmap_write(regmap, KTZ8866_LCD_BIAS_CFG1, 0x9e);
+		msleep(20);
+	} else {
+		regmap_update_bits(regmap, KTZ8866_BL_EN, KTZ8866_BL_ENABLE, 0);
+		regmap_write(regmap, KTZ8866_LCD_BIAS_CFG1, 0x9c);
+		usleep_range(5000, 5100);
+		regmap_write(regmap, KTZ8866_LCD_BIAS_CFG1, 0x98);
+	}
+	pr_info("tb9707f-ktz8866: lcd bias %s\n", on ? "on" : "off");
+}
+EXPORT_SYMBOL(dualktz8866_lcd_bias);
+
+/* Restore the backlight level after the panel was powered up again. */
+void dualktz8866_bl_config(void)
+{
+	if (!tb9707f_bl)
+		return;
+	backlight_update_status(tb9707f_bl);
+	pr_info("tb9707f-ktz8866: backlight restored to %d\n",
+		tb9707f_bl->props.brightness);
+}
+EXPORT_SYMBOL(dualktz8866_bl_config);
+
 static const struct backlight_ops tb9707f_backlight_ops = {
 	.options = BL_CORE_SUSPENDRESUME,
 	.update_status = tb9707f_backlight_update,
@@ -160,6 +210,7 @@ static int tb9707f_ktz8866_probe(struct i2c_client *client)
 		return ret;
 	backlight->props.brightness = ret;
 	i2c_set_clientdata(client, backlight);
+	tb9707f_bl = backlight;
 	return 0;
 }
 
@@ -167,6 +218,7 @@ static int tb9707f_ktz8866_remove(struct i2c_client *client)
 {
 	struct backlight_device *backlight = i2c_get_clientdata(client);
 
+	tb9707f_bl = NULL;
 	return backlight_device_set_brightness(backlight, 0);
 }
 
