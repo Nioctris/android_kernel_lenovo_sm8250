@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+/*
+ * Lenovo's TB-9707F firmware layout. The Xiaomi base reserves a larger SLPI
+ * region and shifts ADSP, SPSS and the CDSP secure heap up accordingly;
+ * TrustZone then rejects the ADSP image ("Memory setup error") and audio
+ * never comes up. Use the stock addresses.
+ */
+&pil_slpi_mem {
+	reg = <0x0 0x88c00000 0x0 0x1500000>;
+};
+
+&pil_adsp_mem {
+	reg = <0x0 0x8a100000 0x0 0x1d00000>;
+};
+
+&pil_spss_mem {
+	reg = <0x0 0x8be00000 0x0 0x100000>;
+};
+
+&cdsp_secure_heap {
+	reg = <0x0 0x8bf00000 0x0 0x4600000>;
+};
+
+&spss_utils {
+	qcom,pil-addr = <0x8be00000>;
+};
