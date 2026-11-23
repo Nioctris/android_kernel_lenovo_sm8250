@@ -5275,7 +5275,9 @@ int dsi_panel_enable(struct dsi_panel *panel)
 		       panel->name, rc);
 	else
 		panel->panel_initialized = true;
-	tb371fc_dbg_on_cmds(panel);
+	/* TB371FC ON-set dump and 0x54 read-back: not for the TB-9707F TDDI */
+	if (0)
+		tb371fc_dbg_on_cmds(panel);
 
 	if (mi_cfg->gamma_update_flag) {
 		if (mi_cfg->gamma_cfg.update_done_60hz &&
