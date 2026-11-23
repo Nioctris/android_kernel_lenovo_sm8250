@@ -5173,6 +5173,35 @@ void mi2s_disable_audio_vote(struct snd_pcm_substream *substream)
 	}
 }
 
+/*
+ * CS35L45 amplifiers on an MI2S link take the bus as I2S slaves and run
+ * their PLL from BCLK, so hand them the interface format and BCLK rate.
+ */
+static void msm_mi2s_setup_cs35l45(struct snd_soc_pcm_runtime *rtd,
+				   unsigned int cpu_fmt, unsigned int bclk)
+{
+	unsigned int fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF;
+	int i, ret;
+
+	fmt |= (cpu_fmt & SND_SOC_DAIFMT_MASTER_MASK) == SND_SOC_DAIFMT_CBS_CFS ?
+		SND_SOC_DAIFMT_CBS_CFS : SND_SOC_DAIFMT_CBM_CFM;
+
+	for (i = 0; i < rtd->num_codecs; i++) {
+		struct snd_soc_dai *dai = rtd->codec_dais[i];
+
+		if (!dai || !dai->name || strcmp(dai->name, "cs35l45"))
+			continue;
+		ret = snd_soc_dai_set_fmt(dai, fmt);
+		if (ret < 0)
+			dev_err(rtd->card->dev, "%s: %s set_fmt failed: %d\n",
+				__func__, dai->component->name, ret);
+		ret = snd_soc_dai_set_sysclk(dai, 0, bclk, SND_SOC_CLOCK_IN);
+		if (ret < 0)
+			dev_err(rtd->card->dev, "%s: %s sysclk %u failed: %d\n",
+				__func__, dai->component->name, bclk, ret);
+	}
+}
+
 static int msm_mi2s_snd_startup(struct snd_pcm_substream *substream)
 {
 	int ret = 0;
@@ -5250,6 +5279,7 @@ static int msm_mi2s_snd_startup(struct snd_pcm_substream *substream)
 				__func__, index, ret);
 			goto clk_off;
 		}
+		msm_mi2s_setup_cs35l45(rtd, fmt, mi2s_clk[index].clk_freq_in_hz);
 		if (pdata->mi2s_gpio_p[index]) {
 			if (atomic_read(&(pdata->mi2s_gpio_ref_count[index]))
 									== 0) {
@@ -7691,6 +7721,83 @@ static const struct of_device_id kona_asoc_machine_of_match[]  = {
 	{},
 };
 
+/*
+ * Boards that drive their speakers from external amplifiers (the TB-9707F
+ * uses two CS35L45) disable the WSA macro in DT. Its DAIs then never
+ * register and the whole card stays deferred. Point those links at the
+ * dummy codec instead of dropping them, so PCM device numbering stays the
+ * one the audio HAL expects.
+ */
+static void msm_stub_disabled_wsa_links(struct snd_soc_dai_link *links,
+					int num_links)
+{
+	struct device_node *np;
+	bool wsa_available;
+	int i;
+
+	np = of_find_compatible_node(NULL, NULL, "qcom,wsa-macro");
+	wsa_available = np && of_device_is_available(np);
+	of_node_put(np);
+	if (wsa_available)
+		return;
+
+	for (i = 0; i < num_links; i++) {
+		if (!links[i].codec_dai_name ||
+		    strncmp(links[i].codec_dai_name, "wsa_macro_", 10))
+			continue;
+		links[i].codec_name = "snd-soc-dummy";
+		links[i].codec_dai_name = "snd-soc-dummy-dai";
+		links[i].init = NULL;
+	}
+}
+
+/*
+ * Lenovo's TB-9707F device tree lists its two CS35L45 speaker amplifiers
+ * in "cirrus,cs35l45-devs" (count in "cirrus,cs35l45-max-devs"). They sit
+ * on Primary MI2S, so make them the codecs of that backend link.
+ */
+static void msm_attach_cs35l45_links(struct device *dev,
+				     struct snd_soc_dai_link *links,
+				     int num_links)
+{
+	struct snd_soc_dai_link_component *codecs;
+	u32 max_devs = 0;
+	int cnt, i;
+
+	if (of_property_read_u32(dev->of_node, "cirrus,cs35l45-max-devs",
+				 &max_devs) || !max_devs)
+		return;
+	cnt = of_count_phandle_with_args(dev->of_node, "cirrus,cs35l45-devs",
+					 NULL);
+	if (cnt <= 0)
+		return;
+	cnt = min_t(int, cnt, max_devs);
+
+	codecs = devm_kcalloc(dev, cnt, sizeof(*codecs), GFP_KERNEL);
+	if (!codecs)
+		return;
+	for (i = 0; i < cnt; i++) {
+		codecs[i].of_node = of_parse_phandle(dev->of_node,
+						     "cirrus,cs35l45-devs", i);
+		codecs[i].dai_name = "cs35l45";
+		if (!codecs[i].of_node)
+			return;
+	}
+
+	for (i = 0; i < num_links; i++) {
+		if (!links[i].no_pcm || !links[i].name ||
+		    strcmp(links[i].name, LPASS_BE_PRI_MI2S_RX))
+			continue;
+		links[i].codec_name = NULL;
+		links[i].codec_dai_name = NULL;
+		links[i].codec_of_node = NULL;
+		links[i].codecs = codecs;
+		links[i].num_codecs = cnt;
+		dev_info(dev, "%s: %d CS35L45 amplifiers on %s\n",
+			 __func__, cnt, links[i].name);
+	}
+}
+
 static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev)
 {
 	struct snd_soc_card *card = NULL;
@@ -7841,6 +7948,8 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev)
 			}
 		}
 		dailink = msm_kona_dai_links;
+		msm_stub_disabled_wsa_links(dailink, total_links);
+		msm_attach_cs35l45_links(dev, dailink, total_links);
 	} else if(!strcmp(match->data, "stub_codec")) {
 		card = &snd_soc_card_stub_msm;
 		len_1 = ARRAY_SIZE(msm_stub_fe_dai_links);
@@ -8028,6 +8137,7 @@ err_hs_detect:
 static int msm_init_aux_dev(struct platform_device *pdev,
 				struct snd_soc_card *card)
 {
+	u32 cs35l45_cnt = 0;
 	struct device_node *wsa_of_node;
 	struct device_node *aux_codec_of_node;
 	u32 wsa_max_devs;
@@ -8244,11 +8354,22 @@ codec_aux_dev:
 		__func__, codecs_found);
 
 aux_dev_register:
+	/* Lenovo CS35L45 amplifiers: link codecs, named by their prefixes */
+	if (!of_property_read_u32(pdev->dev.of_node, "cirrus,cs35l45-max-devs",
+				  &cs35l45_cnt) && cs35l45_cnt) {
+		ret = of_count_phandle_with_args(pdev->dev.of_node,
+						 "cirrus,cs35l45-devs", NULL);
+		cs35l45_cnt = ret > 0 ? min_t(u32, ret, cs35l45_cnt) : 0;
+		ret = 0;
+	} else {
+		cs35l45_cnt = 0;
+	}
+
 	card->num_aux_devs = wsa_max_devs + codec_aux_dev_cnt;
-	card->num_configs = wsa_max_devs + codec_aux_dev_cnt;
+	card->num_configs = wsa_max_devs + codec_aux_dev_cnt + cs35l45_cnt;
 
 	/* Alloc array of AUX devs struct */
-	msm_aux_dev = devm_kcalloc(&pdev->dev, card->num_aux_devs,
+	msm_aux_dev = devm_kcalloc(&pdev->dev, max(card->num_aux_devs, 1),
 				       sizeof(struct snd_soc_aux_dev),
 				       GFP_KERNEL);
 	if (!msm_aux_dev) {
@@ -8310,6 +8431,23 @@ aux_dev_register:
 				goto err;
 		} else {
 			msm_aux_dev[index].init = msm_aux_codec_init;
+		}
+	}
+
+	for (i = 0; i < cs35l45_cnt; i++) {
+		int index = wsa_max_devs + codec_aux_dev_cnt + i;
+
+		msm_codec_conf[index].of_node =
+			of_parse_phandle(pdev->dev.of_node,
+					 "cirrus,cs35l45-devs", i);
+		ret = of_property_read_string_index(pdev->dev.of_node,
+				"cirrus,cs35l45-aux-dev-prefix", i,
+				&msm_codec_conf[index].name_prefix);
+		if (ret || !msm_codec_conf[index].of_node) {
+			dev_err(&pdev->dev, "%s: bad CS35L45 entry %d\n",
+				__func__, i);
+			ret = -EINVAL;
+			goto err;
 		}
 	}
 
