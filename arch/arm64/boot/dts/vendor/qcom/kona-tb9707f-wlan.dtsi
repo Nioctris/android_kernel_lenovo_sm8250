@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+/*
+ * QCA6390 supplies as in Lenovo's stock TB-9707F device tree. The Xiaomi
+ * base feeds the digital rail from a PM8009 regulator the Y700 does not
+ * have, so cnss2 deferred forever and the WLAN driver never registered.
+ */
+&wlan {
+	/delete-property/ use-nv-mac;
+	vdd-wlan-dig-supply = <&S6A>;
+	wlan-ant-switch-supply = <&L5C>;
+	qcom,wlan-ant-switch-config = <1800000 1800000 0 0 0>;
+};
