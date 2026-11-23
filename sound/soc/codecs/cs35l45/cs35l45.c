@@ -1422,6 +1422,19 @@ static int cs35l45_dai_hw_params(struct snd_pcm_substream *substream,
 				   asp_wl << CS35L45_ASP_WL_SHIFT);
 	}
 
+	/*
+	 * Without TDM the ASP is a plain two-slot I2S slave and the PLL runs
+	 * from BCLK; lock it to the rate the host actually drives.
+	 */
+	if (!cs35l45->pdata.use_tdm_slots) {
+		unsigned int bclk = params_rate(params) * 2 * asp_width;
+		int ret = cs35l45_set_sysclk(cs35l45, 0, bclk);
+
+		if (ret)
+			dev_warn(cs35l45->dev, "No PLL config for BCLK %u: %d\n",
+				 bclk, ret);
+	}
+
 	return 0;
 }
 
