@@ -13,6 +13,8 @@
 #include <linux/gpio/consumer.h>
 #include <linux/of_device.h>
 #include <linux/firmware.h>
+#include <linux/fs.h>
+#include <linux/vmalloc.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -199,6 +201,79 @@ static int cs35l45_dsp_loader_ev(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
+/*
+ * Factory speaker calibration, as Lenovo's audio HAL applied it: decimal
+ * ASCII in /mnt/vendor/persist/audio/spk_<n>_{cal_r,ambient}, <n> from the
+ * SPK<n> name prefix. CSPL only takes it when it is in XM before the core
+ * starts, so write it from the boot event rather than from userspace.
+ */
+static int cs35l45_read_persist_u32(const char *spk, const char *name,
+				    u32 *val)
+{
+	char path[64], tmp[16];
+	void *buf = NULL;
+	loff_t size = 0;
+	int ret;
+
+	snprintf(path, sizeof(path), "/mnt/vendor/persist/audio/spk_%s_%s",
+		 spk, name);
+	ret = kernel_read_file_from_path(path, &buf, &size, sizeof(tmp) - 1,
+					 READING_UNKNOWN);
+	if (ret)
+		return ret;
+
+	memcpy(tmp, buf, size);
+	tmp[size] = '\0';
+	vfree(buf);
+
+	return kstrtou32(strim(tmp), 0, val);
+}
+
+static void cs35l45_apply_persist_cal(struct cs35l45_private *cs35l45)
+{
+	const char *prefix = cs35l45->dsp.component ?
+			     cs35l45->dsp.component->name_prefix : NULL;
+	static const char * const names[] = {
+		"CAL_AMBIENT", "CAL_STATUS", "CAL_CHECKSUM", "CAL_R",
+	};
+	u32 cal_r, ambient, vals[4];
+	int i, ret;
+
+	if (!prefix || strncmp(prefix, "SPK", 3) || !prefix[3])
+		return;
+
+	ret = cs35l45_read_persist_u32(prefix + 3, "cal_r", &cal_r);
+	if (!ret)
+		ret = cs35l45_read_persist_u32(prefix + 3, "ambient", &ambient);
+	if (ret) {
+		dev_info(cs35l45->dev, "No speaker calibration (%d)\n", ret);
+		return;
+	}
+
+	vals[0] = ambient;
+	vals[1] = 1;
+	vals[2] = cal_r + 1;
+	vals[3] = cal_r;
+	for (i = 0; i < ARRAY_SIZE(names); i++) {
+		__be32 v = cpu_to_be32(vals[i]);
+
+		ret = cs35l45_wm_adsp_write_ctl(&cs35l45->dsp, names[i],
+						WMFW_ADSP2_XM, CS35L45_ALGID,
+						&v, sizeof(v));
+		if (ret) {
+			dev_err(cs35l45->dev, "Failed to write %s: %d\n",
+				names[i], ret);
+			return;
+		}
+	}
+
+	ret = cs35l45_wm_adsp_sync_controls(&cs35l45->dsp);
+	if (ret)
+		dev_err(cs35l45->dev, "Failed to sync calibration: %d\n", ret);
+	else
+		dev_info(cs35l45->dev, "Speaker calibration applied\n");
+}
+
 static int cs35l45_dsp_boot_ev(struct snd_soc_dapm_widget *w,
 			       struct snd_kcontrol *kcontrol, int event)
 {
@@ -219,9 +294,21 @@ static int cs35l45_dsp_boot_ev(struct snd_soc_dapm_widget *w,
 				   CS35L45_MEM_RDY_MASK,
 				   CS35L45_MEM_RDY_MASK);
 
+		/*
+		 * The core boots while no BCLK is running; with the PLL locked
+		 * to BCLK it gets no clock and the firmware watchdog fires a few
+		 * seconds later. Run the PLL open loop until the first stream's
+		 * hw_params locks it to BCLK again.
+		 */
+		regmap_update_bits(cs35l45->regmap, CS35L45_REFCLK_INPUT,
+				   CS35L45_PLL_OPEN_LOOP_MASK,
+				   CS35L45_PLL_OPEN_LOOP_MASK);
+
 		regmap_write(cs35l45->regmap, CS35L45_DSP1_CCM_CORE_CONTROL,
 			     CS35L45_CCM_PM_REMAP_MASK |
 			     CS35L45_CCM_CORE_RESET_MASK);
+
+		cs35l45_apply_persist_cal(cs35l45);
 
 		reinit_completion(&cs35l45->virt2_mbox_comp);
 
@@ -284,13 +371,8 @@ static int cs35l45_dsp_power_ev(struct snd_soc_dapm_widget *w,
 		queue_work(system_unbound_wq, &cs35l45->dsp_pmu_work);
 		break;
 	case SND_SOC_DAPM_PRE_PMD:
-		if (!cs35l45->dsp.running) {
-			dev_err(cs35l45->dev, "DSP not running\n");
-			return -EPERM;
-		}
-
+		/* GLOBAL_EN pauses CSPL synchronously before it drops clocks */
 		flush_work(&cs35l45->dsp_pmu_work);
-		queue_work(system_unbound_wq, &cs35l45->dsp_pmd_work);
 		break;
 	default:
 		dev_err(cs35l45->dev, "Invalid event = 0x%x\n", event);
@@ -316,6 +398,14 @@ static int cs35l45_global_en_ev(struct snd_soc_dapm_widget *w,
 			     CS35L45_GLOBAL_EN_MASK);
 		break;
 	case SND_SOC_DAPM_PRE_PMD:
+		/* Pause CSPL while it still has clocks */
+		if (cs35l45->dapm_mode != DAPM_MODE_ASP && cs35l45->dsp.running) {
+			flush_work(&cs35l45->dsp_pmu_work);
+			mutex_lock(&cs35l45->dsp_power_lock);
+			cs35l45_set_csplmboxcmd(cs35l45, CSPL_MBOX_CMD_PAUSE);
+			mutex_unlock(&cs35l45->dsp_power_lock);
+		}
+
 		regmap_read(cs35l45->regmap, CS35L45_BLOCK_ENABLES, &val);
 
 		val = (val & CS35L45_BST_EN_MASK) >> CS35L45_BST_EN_SHIFT;
@@ -564,14 +654,22 @@ static const struct snd_soc_dapm_route cs35l45_asp_routes[] = {
 	{"Exit", NULL, "GLOBAL_EN"},
 };
 
+/*
+ * The CSPL firmware on the TB-9707F does not assert GLOBAL_EN by itself
+ * after RESUME, so keep it under DAPM control in the DSP modes as well.
+ */
 static const struct snd_soc_dapm_route cs35l45_dsp_slave_routes[] = {
 	{"DSP1 Slave", NULL, "Entry"},
 	{"Exit", NULL, "DSP1 Slave"},
+	{"GLOBAL_EN", NULL, "Entry"},
+	{"Exit", NULL, "GLOBAL_EN"},
 };
 
 static const struct snd_soc_dapm_route cs35l45_dsp_master_routes[] = {
 	{"DSP1 Master", NULL, "Entry"},
 	{"Exit", NULL, "DSP1 Master"},
+	{"GLOBAL_EN", NULL, "Entry"},
+	{"Exit", NULL, "GLOBAL_EN"},
 };
 
 static int cs35l45_set_dapm_route_mode(struct cs35l45_private *cs35l45,
@@ -1645,10 +1743,9 @@ static int cs35l45_set_sysclk(struct cs35l45_private *cs35l45, int clk_id,
 	}
 
 	regmap_read(cs35l45->regmap, CS35L45_REFCLK_INPUT, &val);
-	val = (val & CS35L45_PLL_REFCLK_FREQ_MASK) >>
-		     CS35L45_PLL_REFCLK_FREQ_SHIFT;
-
-	if (val == extclk_cfg)
+	if (!(val & CS35L45_PLL_OPEN_LOOP_MASK) &&
+	    ((val & CS35L45_PLL_REFCLK_FREQ_MASK) >>
+	     CS35L45_PLL_REFCLK_FREQ_SHIFT) == extclk_cfg)
 		return 0;
 
 	regmap_update_bits(cs35l45->regmap, CS35L45_REFCLK_INPUT,

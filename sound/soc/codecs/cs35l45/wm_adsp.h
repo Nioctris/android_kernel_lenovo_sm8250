@@ -225,6 +225,7 @@ int cs35l45_wm_adsp_compr_pointer(struct snd_soc_component *component,
 int cs35l45_wm_adsp_compr_copy(struct snd_soc_component *component,
 		       struct snd_compr_stream *stream,
 		       char __user *buf, size_t count);
+int cs35l45_wm_adsp_sync_controls(struct wm_adsp *dsp);
 int cs35l45_wm_adsp_write_ctl(struct wm_adsp *dsp, const char *name,  int type,
 		      unsigned int alg, void *buf, size_t len);
 int cs35l45_wm_adsp_read_ctl(struct wm_adsp *dsp, const char *name,  int type,

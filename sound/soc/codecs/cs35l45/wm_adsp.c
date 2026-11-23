@@ -2269,6 +2269,12 @@ static struct wm_coeff_ctl *wm_adsp_get_ctl(struct wm_adsp *dsp,
 	return rslt;
 }
 
+/* Write set (cached) controls to DSP memory, e.g. before starting the core */
+int cs35l45_wm_adsp_sync_controls(struct wm_adsp *dsp)
+{
+	return wm_coeff_sync_controls(dsp);
+}
+
 int cs35l45_wm_adsp_write_ctl(struct wm_adsp *dsp, const char *name, int type,
 		      unsigned int alg, void *buf, size_t len)
 {
