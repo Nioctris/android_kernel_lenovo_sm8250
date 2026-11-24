@@ -7733,6 +7733,7 @@ static void msm_stub_disabled_wsa_links(struct snd_soc_dai_link *links,
 {
 	struct device_node *np;
 	bool wsa_available;
+	bool moved_init = false;
 	int i;
 
 	np = of_find_compatible_node(NULL, NULL, "qcom,wsa-macro");
@@ -7749,6 +7750,23 @@ static void msm_stub_disabled_wsa_links(struct snd_soc_dai_link *links,
 		links[i].codec_dai_name = "snd-soc-dummy-dai";
 		links[i].init = NULL;
 	}
+
+	/*
+	 * msm_int_audrx_init() rides on the WSA RX_0 link. It sets the bolero
+	 * SoundWire port maps and registers the wake irq, which the WCD938x
+	 * needs for headphone playback and jack detection, so run it from the
+	 * RX CDC DMA RX_0 link instead.
+	 */
+	for (i = 0; i < num_links && !moved_init; i++) {
+		if (!links[i].name ||
+		    strcmp(links[i].name, LPASS_BE_RX_CDC_DMA_RX_0) ||
+		    links[i].init)
+			continue;
+		links[i].init = &msm_int_audrx_init;
+		moved_init = true;
+	}
+	if (!moved_init)
+		pr_err("%s: no link to run the bolero init from\n", __func__);
 }
 
 /*
