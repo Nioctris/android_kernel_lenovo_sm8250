@@ -3997,14 +3997,11 @@ static void rx_macro_add_child_devices(struct work_struct *work)
 			}
 		}
 
-		ret = platform_device_add(pdev);
-		if (ret) {
-			dev_err(&pdev->dev,
-				"%s: Cannot add platform device\n",
-				__func__);
-			goto fail_pdev_add;
-		}
-
+		/*
+		 * Publish the controller before platform_device_add(): adding it
+		 * can probe the codec and the sound card synchronously, and the
+		 * card init (port map, wake irq) needs swr_ctrl_data already set.
+		 */
 		if (rx_swr_master_node) {
 			temp = krealloc(swr_ctrl_data,
 					(ctrl_num + 1) * sizeof(
@@ -4021,6 +4018,14 @@ static void rx_macro_add_child_devices(struct work_struct *work)
 				"%s: Added soundwire ctrl device(s)\n",
 				__func__);
 			rx_priv->swr_ctrl_data = swr_ctrl_data;
+		}
+
+		ret = platform_device_add(pdev);
+		if (ret) {
+			dev_err(&pdev->dev,
+				"%s: Cannot add platform device\n",
+				__func__);
+			goto fail_pdev_add;
 		}
 		if (rx_priv->child_count < RX_MACRO_CHILD_DEVICES_MAX)
 			rx_priv->pdev_child_devices[
