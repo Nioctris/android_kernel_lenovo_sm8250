@@ -497,7 +497,14 @@ static int aw_parse_dt(struct awinic *awinic, struct device *dev,
 		       struct device_node *np)
 {
 	awinic->reset_gpio = of_get_named_gpio(np, "reset-gpio", 0);
-	if (awinic->reset_gpio >= 0) {
+	/*
+	 * "share_reset": the line also resets the other motor, which toggles
+	 * it in its own probe; leave it alone here.
+	 */
+	if (of_property_read_bool(np, "share_reset")) {
+		aw_info("%s: reset shared, not driven by this chip\n", __func__);
+		awinic->reset_gpio = -1;
+	} else if (awinic->reset_gpio >= 0) {
 		aw_err("%s: reset gpio provided ok\n", __func__);
 	} else {
 		awinic->reset_gpio = -1;
@@ -522,6 +529,58 @@ static int aw_parse_dt(struct awinic *awinic, struct device *dev,
  * i2c driver
  *
  ******************************************************/
+/*
+ * Paired AW869x motors (Lenovo TB-9707F, left and right): the first chip
+ * registers the input device, the second only gets an unregistered one
+ * carrying its drvdata, and every force-feedback call is replayed on it.
+ */
+static struct input_dev *aw869x_primary_input;
+static struct input_dev *aw869x_mirror_input;
+
+static int aw869x_pair_upload_effect(struct input_dev *dev,
+				     struct ff_effect *effect,
+				     struct ff_effect *old)
+{
+	int ret = aw869x_haptics_upload_effect(dev, effect, old);
+
+	if (!ret && aw869x_mirror_input)
+		aw869x_haptics_upload_effect(aw869x_mirror_input, effect, old);
+	return ret;
+}
+
+static int aw869x_pair_playback(struct input_dev *dev, int effect_id, int val)
+{
+	int ret = aw869x_haptics_playback(dev, effect_id, val);
+
+	if (aw869x_mirror_input)
+		aw869x_haptics_playback(aw869x_mirror_input, effect_id, val);
+	return ret;
+}
+
+static int aw869x_pair_erase(struct input_dev *dev, int effect_id)
+{
+	int ret = aw869x_haptics_erase(dev, effect_id);
+
+	if (aw869x_mirror_input)
+		aw869x_haptics_erase(aw869x_mirror_input, effect_id);
+	return ret;
+}
+
+static void aw869x_pair_set_gain(struct input_dev *dev, u16 gain)
+{
+	aw869x_haptics_set_gain(dev, gain);
+	if (aw869x_mirror_input)
+		aw869x_haptics_set_gain(aw869x_mirror_input, gain);
+}
+
+/*
+ * TB-9707F: the second (left, "haptic_hv_l") motor has neither pinctrl nor
+ * a reset of its own, so it waits for the first one; aw86927_haptic.left=0
+ * keeps it unbound.
+ */
+static bool aw869x_left = true;
+module_param_named(left, aw869x_left, bool, 0644);
+
 static int aw_i2c_probe(struct i2c_client *i2c, const struct i2c_device_id *id)
 {
 	struct awinic *awinic;
@@ -538,6 +597,13 @@ static int aw_i2c_probe(struct i2c_client *i2c, const struct i2c_device_id *id)
 #endif
 
 	aw_info("%s enter\n", __func__);
+	if (np && of_device_is_compatible(np, "awinic,haptic_hv_l")) {
+		if (!aw869x_left)
+			return -ENODEV;
+		/* its INT pull-up and the shared reset come with the right one */
+		if (!aw869x_primary_input)
+			return -EPROBE_DEFER;
+	}
 	if (!i2c_check_functionality(i2c->adapter, I2C_FUNC_I2C)) {
 		aw_err("check_functionality failed\n");
 		return -EIO;
@@ -578,12 +644,12 @@ static int aw_i2c_probe(struct i2c_client *i2c, const struct i2c_device_id *id)
 			rc = -EPROBE_DEFER;
 			return rc;
 		}
+		/* e.g. the TB-9707F left motor: plain GPIOs only */
 		aw_info("%s Target does not use pinctrl\n", __func__);
 		awinic->awinic_pinctrl = NULL;
-		rc = -EINVAL;
-		return rc;
 	}
-	for (i = 0; i < ARRAY_SIZE(awinic->pinctrl_state); i++) {
+	for (i = 0; awinic->awinic_pinctrl &&
+		    i < ARRAY_SIZE(awinic->pinctrl_state); i++) {
 		const char *n = pctl_names[i];
 		struct pinctrl_state *state =
 			pinctrl_lookup_state(awinic->awinic_pinctrl, n);
@@ -603,7 +669,13 @@ static int aw_i2c_probe(struct i2c_client *i2c, const struct i2c_device_id *id)
 						    awinic->reset_gpio,
 						    GPIOF_OUT_INIT_LOW,
 						    "awinic_rst");
-			if (ret) {
+			if (ret == -EBUSY) {
+				/* Reset shared with the other chip */
+				aw_info("%s: rst shared, owned elsewhere\n",
+					__func__);
+				awinic->reset_gpio = -1;
+				ret = 0;
+			} else if (ret) {
 				aw_err("%s: rst request failed\n", __func__);
 				goto err_reset_gpio_request;
 			}
@@ -702,6 +774,21 @@ static int aw_i2c_probe(struct i2c_client *i2c, const struct i2c_device_id *id)
 			input_set_capability(input_dev, EV_FF, FF_PERIODIC);
 			input_set_capability(input_dev, EV_FF, FF_CUSTOM);
 		}
+		INIT_WORK(&awinic->aw869x->set_gain_work,
+			  aw869x_haptics_set_gain_work_routine);
+		/* One of the names the QTI vibrator HAL looks for */
+		if (awinic->name == AW8697)
+			input_dev->name = "aw8697_haptic";
+		if (aw869x_primary_input) {
+			/*
+			 * Second motor of a pair: no input device of its own,
+			 * the first one replays every request on it.
+			 */
+			aw869x_mirror_input = input_dev;
+			aw_info("%s: mirroring the first haptic input\n",
+				__func__);
+			goto aw869x_input_done;
+		}
 		if (awinic->aw869x->effects_count + 1 > FF_EFFECT_COUNT_MAX)
 			effect_count_max = awinic->aw869x->effects_count + 1;
 		else
@@ -712,19 +799,20 @@ static int aw_i2c_probe(struct i2c_client *i2c, const struct i2c_device_id *id)
 			       __func__, rc);
 			goto err_aw869x_input_ff;
 		}
-		INIT_WORK(&awinic->aw869x->set_gain_work,
-			  aw869x_haptics_set_gain_work_routine);
 		ff = input_dev->ff;
-		ff->upload = aw869x_haptics_upload_effect;
-		ff->playback = aw869x_haptics_playback;
-		ff->erase = aw869x_haptics_erase;
-		ff->set_gain = aw869x_haptics_set_gain;
+		ff->upload = aw869x_pair_upload_effect;
+		ff->playback = aw869x_pair_playback;
+		ff->erase = aw869x_pair_erase;
+		ff->set_gain = aw869x_pair_set_gain;
 		rc = input_register_device(input_dev);
 		if (rc < 0) {
 			aw_err("%s register input device failed, rc=%d\n",
 			       __func__, rc);
 			goto aw869x_destroy_ff;
 		}
+		aw869x_primary_input = input_dev;
+aw869x_input_done:
+		;
 	} else if (awinic->name == AW86927) {
 		awinic->aw86927 = devm_kzalloc(
 			&i2c->dev, sizeof(struct aw86927), GFP_KERNEL);
@@ -1088,6 +1176,9 @@ MODULE_DEVICE_TABLE(i2c, aw_i2c_id);
 
 static const struct of_device_id aw_dt_match[] = {
 	{ .compatible = "awinic,awinic_haptic" },
+	/* Lenovo TB-9707F: left and right AW8697 */
+	{ .compatible = "awinic,haptic_hv_l" },
+	{ .compatible = "awinic,haptic_hv_r" },
 	{},
 };
 
