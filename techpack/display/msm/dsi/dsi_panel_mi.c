@@ -382,6 +382,12 @@ int dsi_panel_parse_mi_config(struct dsi_panel *panel,
 		pr_info("mi feature enabled\n");
 	} else {
 		pr_info("mi feature disabled\n");
+		/*
+		 * Nothing gates the backlight without the Xiaomi features
+		 * (Lenovo TB-9707F); otherwise dsi_panel_set_backlight()
+		 * drops every level until the first panel disable.
+		 */
+		mi_cfg->bl_enable = true;
 		return 0;
 	}
 
