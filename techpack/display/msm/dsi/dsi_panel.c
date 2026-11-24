@@ -2522,10 +2522,26 @@ static int dsi_panel_parse_cmd_sets_sub(struct dsi_panel_cmd_set *cmd,
 	u32 length = 0;
 	const char *data;
 	const char *state;
+	const char *state_prop = cmd_set_state_map[type];
 	u32 packet_count = 0;
 
 	data = utils->get_property(utils->data, cmd_set_prop_map[type],
 			&length);
+	/*
+	 * Lenovo TB-9707F: the stock panel DT names the touch-scan rate
+	 * commands sent on a refresh-rate switch fps120/fps60; they are what
+	 * the Xiaomi code sends as the pen 120/60 Hz sets.
+	 */
+	if (!data && (type == DSI_CMD_SET_DISP_PEN_120HZ ||
+		      type == DSI_CMD_SET_DISP_PEN_60HZ)) {
+		bool hz120 = type == DSI_CMD_SET_DISP_PEN_120HZ;
+
+		data = utils->get_property(utils->data, hz120 ?
+				"qcom,mdss-dsi-fps120-command" :
+				"qcom,mdss-dsi-fps60-command", &length);
+		state_prop = hz120 ? "qcom,mdss-dsi-fps120-command-state" :
+				     "qcom,mdss-dsi-fps60-command-state";
+	}
 	if (!data) {
 		DSI_DEBUG("%s commands not defined\n", cmd_set_prop_map[type]);
 		rc = -ENOTSUPP;
@@ -2559,7 +2575,7 @@ static int dsi_panel_parse_cmd_sets_sub(struct dsi_panel_cmd_set *cmd,
 		goto error_free_mem;
 	}
 
-	state = utils->get_property(utils->data, cmd_set_state_map[type], NULL);
+	state = utils->get_property(utils->data, state_prop, NULL);
 	if (!state || !strcmp(state, "dsi_lp_mode")) {
 		cmd->state = DSI_CMD_SET_STATE_LP;
 	} else if (!strcmp(state, "dsi_hs_mode")) {
