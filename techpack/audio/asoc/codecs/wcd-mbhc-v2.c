@@ -1194,7 +1194,12 @@ static irqreturn_t wcd_mbhc_btn_press_handler(int irq, void *data)
 				__func__);
 		goto done;
 	}
-	mbhc->buttons_pressed |= mask;
+	/*
+	 * A press can be sampled while the mic line is still settling, which
+	 * reads a higher button first and the real one a few ms later. Keep
+	 * the latest reading instead of OR-ing both into one report.
+	 */
+	mbhc->buttons_pressed = mask;
 	mbhc->mbhc_cb->lock_sleep(mbhc, true);
 	if (schedule_delayed_work(&mbhc->mbhc_btn_dwork,
 				msecs_to_jiffies(400)) == 0) {
