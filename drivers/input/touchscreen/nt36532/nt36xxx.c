@@ -1082,6 +1082,9 @@ static int32_t nvt_parse_dt(struct device *dev)
 	ts->pen_support = of_property_read_bool(np, "novatek,pen-support");
 	NVT_LOG("novatek,pen-support=%d\n", ts->pen_support);
 
+	ts->wgp_stylus = of_property_read_bool(np, "novatek,wgp-stylus");
+	NVT_LOG("novatek,wgp-stylus=%d\n", ts->wgp_stylus);
+
 	ts->stylus_resol_double = of_property_read_bool(np, "novatek,stylus-resol-double");
 	NVT_LOG("novatek,stylus-resol-double=%d\n", ts->stylus_resol_double);
 
@@ -1994,6 +1997,8 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 	}
 
 	if (ts->pen_support) {
+		uint32_t pen_scale_n;
+
 		//---allocate pen input device---
 		ts->pen_input_dev = input_allocate_device();
 		if (ts->pen_input_dev == NULL) {
@@ -2001,6 +2006,9 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 			ret = -ENOMEM;
 			goto err_pen_input_dev_alloc_failed;
 		}
+
+		/* WGP pen firmware reports the pen axes at 8x the touch grid. */
+		pen_scale_n = ts->wgp_stylus ? 8 : NVT_SUPER_RESOLUTION_N;
 
 		//---set pen input device info.---
 		ts->pen_input_dev->evbit[0] = BIT_MASK(EV_SYN) | BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS);
@@ -2010,8 +2018,10 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 		ts->pen_input_dev->keybit[BIT_WORD(BTN_STYLUS2)] |= BIT_MASK(BTN_STYLUS2);
 		ts->pen_input_dev->propbit[0] = BIT(INPUT_PROP_DIRECT);
 
-		input_set_abs_params(ts->pen_input_dev, ABS_X, 0, ts->abs_x_max * NVT_SUPER_RESOLUTION_N, 0, 0);
-		input_set_abs_params(ts->pen_input_dev, ABS_Y, 0, ts->abs_y_max * NVT_SUPER_RESOLUTION_N, 0, 0);
+		input_set_abs_params(ts->pen_input_dev, ABS_X, 0,
+				     (ts->abs_x_max * pen_scale_n) - 1, 0, 0);
+		input_set_abs_params(ts->pen_input_dev, ABS_Y, 0,
+				     (ts->abs_y_max * pen_scale_n) - 1, 0, 0);
 		input_set_abs_params(ts->pen_input_dev, ABS_PRESSURE, 0, PEN_PRESSURE_MAX, 0, 0);
 		input_set_abs_params(ts->pen_input_dev, ABS_DISTANCE, 0, PEN_DISTANCE_MAX, 0, 0);
 		input_set_abs_params(ts->pen_input_dev, ABS_TILT_X, PEN_TILT_MIN, PEN_TILT_MAX, 0, 0);

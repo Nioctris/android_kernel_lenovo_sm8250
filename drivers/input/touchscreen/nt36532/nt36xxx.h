@@ -169,6 +169,7 @@ struct nvt_ts_data {
 	bool irq_enabled;
 	bool irq_wake_enabled;
 	bool pen_support;
+	bool wgp_stylus;
 	bool stylus_resol_double;
 	bool fw_debug;
 	uint8_t x_gang_num;
