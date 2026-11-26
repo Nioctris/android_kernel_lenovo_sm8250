@@ -456,6 +456,18 @@ bool pc_port_psy_initialized(struct fg_dev *fg)
 	return true;
 }
 
+/*
+ * SMB139x divide-by-2 charge pumps charge the battery in parallel with the
+ * main charger, like a parallel charger does.
+ */
+bool is_div2_cp_available(struct fg_dev *fg)
+{
+	if (!fg->cp_psy)
+		fg->cp_psy = power_supply_get_by_name("charge_pump_master");
+
+	return fg->cp_psy != NULL;
+}
+
 bool is_parallel_charger_available(struct fg_dev *fg)
 {
 	if (!fg->parallel_psy)
