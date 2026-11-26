@@ -18,6 +18,7 @@
 #include <linux/fs.h>
 #include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
+#include <linux/init.h>
 #include <linux/gpio/driver.h>
 #include <linux/input.h>
 #include <linux/input/nvt_lenovo.h>
@@ -966,7 +967,7 @@ static const struct {
 	umode_t mode;
 	const struct file_operations *fops;
 } nvt_lenovo_procs[] = {
-	{ "gesture_control", 0444, &gesture_control_fops },
+	{ "gesture_control", 0664, &gesture_control_fops },
 	{ "nvt_fw_status", 0444, &nvt_fw_status_fops },
 	{ "panel_direction", 0644, &nvt_edge_reject_fops },
 	{ "edge_grid_zone", 0644, &nvt_edge_grid_zone_fops },
@@ -1014,11 +1015,18 @@ int32_t nvt_lenovo_init(void)
 
 	INIT_WORK(&ts->restore_cmd_work, nvt_restore_cmd_func);
 
-	tlmm = gpiochip_find(NVT_HALL_TLMM_LABEL, nvt_hall_chip_match);
-	if (tlmm)
-		nvt_hall_gpio = tlmm->base + NVT_HALL_TLMM_GPIO;
-	else
-		NVT_ERR("no TLMM, keyboard cover state unavailable\n");
+	/*
+	 * Only the TB371FC (NT36532 panel) has the keyboard cover hall sensor
+	 * on this GPIO; elsewhere the line means something else, and reading
+	 * it as a closed cover would keep double-tap wake from arming.
+	 */
+	if (strstr(saved_command_line, "nt36532")) {
+		tlmm = gpiochip_find(NVT_HALL_TLMM_LABEL, nvt_hall_chip_match);
+		if (tlmm)
+			nvt_hall_gpio = tlmm->base + NVT_HALL_TLMM_GPIO;
+		else
+			NVT_ERR("no TLMM, keyboard cover state unavailable\n");
+	}
 
 	INIT_DELAYED_WORK(&nvt_hall_check_work, nvt_hall_check_func);
 	nvt_hall_check_wq = alloc_workqueue("%s", WQ_MEM_RECLAIM, 1,
