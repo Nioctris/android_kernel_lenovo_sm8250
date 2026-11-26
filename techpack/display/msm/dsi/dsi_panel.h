@@ -224,6 +224,8 @@ struct dsi_panel {
 	bool ulps_suspend_enabled;
 	bool allow_phy_power_off;
 	bool reset_gpio_always_on;
+	/* Power left on at power off for double-tap wake (TB-9707F). */
+	bool gesture_power_kept;
 	atomic_t esd_recovery_pending;
 
 	bool panel_initialized;

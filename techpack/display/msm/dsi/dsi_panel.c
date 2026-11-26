@@ -496,6 +496,9 @@ static int dsi_panel_power_on(struct dsi_panel *panel)
 				panel->mi_cfg.panel_dead_flag = false;
 			}
 		}
+	} else if (panel->gesture_power_kept) {
+		/* The supplies stayed on for double-tap wake. */
+		panel->gesture_power_kept = false;
 	} else {
 		rc = dsi_pwr_enable_regulator(&panel->power_info, true);
 	}
@@ -615,6 +618,15 @@ skip_gpios:
 		if (rc)
 			DSI_ERR("[%s] failed set pinctrl state, rc=%d\n",
 				panel->name, rc);
+	}
+
+	/*
+	 * The touch controller is part of the panel: keep its supplies on
+	 * while it watches for a double tap.
+	 */
+	if (gesture && !panel->mi_cfg.is_tddi_flag) {
+		panel->gesture_power_kept = true;
+		return rc;
 	}
 
 	if (!panel->mi_cfg.is_tddi_flag
