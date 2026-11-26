@@ -314,6 +314,7 @@ enum power_supply_property {
 	POWER_SUPPLY_PROP_PD_CURRENT_MAX,
 	POWER_SUPPLY_PROP_PD_POWER_MAX, /* advertised source capacity in mW */
 	POWER_SUPPLY_PROP_BYPASS_CHARGING, /* user request to power from the charger only */
+	POWER_SUPPLY_PROP_CHARGE_CURRENT_LIMIT, /* user battery charge current cap in uA, 0 = none */
 	POWER_SUPPLY_PROP_APDO_MAX,
 	POWER_SUPPLY_PROP_POWER_MAX,
 	POWER_SUPPLY_PROP_PD_USB_SUSPEND_SUPPORTED,

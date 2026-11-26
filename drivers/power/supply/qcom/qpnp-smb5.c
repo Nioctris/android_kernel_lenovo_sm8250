@@ -1753,10 +1753,12 @@ static enum power_supply_property smb5_batt_props[] = {
 	POWER_SUPPLY_PROP_FCC_STEPPER_ENABLE,
 	POWER_SUPPLY_PROP_BATTERY_CHARGING_ENABLED,
 	POWER_SUPPLY_PROP_BYPASS_CHARGING,
+	POWER_SUPPLY_PROP_CHARGE_CURRENT_LIMIT,
 };
 
 #define BYPASS_VOTER			"BYPASS_VOTER"
 #define USER_BYPASS_VOTER		"USER_BYPASS_VOTER"
+#define USER_FCC_LIMIT_VOTER		"USER_FCC_LIMIT_VOTER"
 
 /*
  * Keep the input up and stop charging the battery (bypass). The charge
@@ -1928,6 +1930,12 @@ static int smb5_batt_get_prop(struct power_supply *psy,
 		val->intval = get_client_vote(chg->chg_disable_votable,
 					      USER_BYPASS_VOTER);
 		break;
+	case POWER_SUPPLY_PROP_CHARGE_CURRENT_LIMIT:
+		val->intval = is_client_vote_enabled(chg->fcc_votable,
+						     USER_FCC_LIMIT_VOTER) ?
+			get_client_vote(chg->fcc_votable,
+					USER_FCC_LIMIT_VOTER) : 0;
+		break;
 	case POWER_SUPPLY_PROP_FCC_STEPPER_ENABLE:
 		val->intval = chg->fcc_stepper_enable;
 		break;
@@ -2031,6 +2039,11 @@ static int smb5_batt_set_prop(struct power_supply *psy,
 		/* Manual bypass, independent of the charge limit. */
 		rc = smb5_vote_bypass(chg, USER_BYPASS_VOTER, !!val->intval);
 		break;
+	case POWER_SUPPLY_PROP_CHARGE_CURRENT_LIMIT:
+		/* User cap on the battery charge current (charging power). */
+		rc = vote(chg->fcc_votable, USER_FCC_LIMIT_VOTER,
+			  val->intval > 0, val->intval);
+		break;
 	case POWER_SUPPLY_PROP_RECHARGE_SOC:
 		rc = smblib_set_prop_rechg_soc_thresh(chg, val);
 		break;
@@ -2069,6 +2082,7 @@ static int smb5_batt_prop_is_writeable(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_DIE_HEALTH:
 	case POWER_SUPPLY_PROP_BATTERY_CHARGING_ENABLED:
 	case POWER_SUPPLY_PROP_BYPASS_CHARGING:
+	case POWER_SUPPLY_PROP_CHARGE_CURRENT_LIMIT:
 		return 1;
 	default:
 		break;
