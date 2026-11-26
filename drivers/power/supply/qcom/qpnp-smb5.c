@@ -1752,9 +1752,26 @@ static enum power_supply_property smb5_batt_props[] = {
 	POWER_SUPPLY_PROP_TIME_TO_FULL_NOW,
 	POWER_SUPPLY_PROP_FCC_STEPPER_ENABLE,
 	POWER_SUPPLY_PROP_BATTERY_CHARGING_ENABLED,
+	POWER_SUPPLY_PROP_BYPASS_CHARGING,
 };
 
 #define BYPASS_VOTER			"BYPASS_VOTER"
+#define USER_BYPASS_VOTER		"USER_BYPASS_VOTER"
+
+/*
+ * Keep the input up and stop charging the battery (bypass). The charge
+ * pumps feed the battery directly, so stop them too. Each voter is
+ * independent: the battery charges only when no voter asks for bypass.
+ */
+static int smb5_vote_bypass(struct smb_charger *chg, const char *voter,
+			    bool bypass)
+{
+	if (!chg->cp_disable_votable)
+		chg->cp_disable_votable = find_votable("CP_DISABLE");
+	if (chg->cp_disable_votable)
+		vote(chg->cp_disable_votable, voter, bypass, 0);
+	return vote(chg->chg_disable_votable, voter, bypass, 0);
+}
 
 #define DEBUG_ACCESSORY_TEMP_DECIDEGC	250
 static int smb5_batt_get_prop(struct power_supply *psy,
@@ -1907,6 +1924,10 @@ static int smb5_batt_get_prop(struct power_supply *psy,
 		val->intval = !get_client_vote(chg->chg_disable_votable,
 						 BYPASS_VOTER);
 		break;
+	case POWER_SUPPLY_PROP_BYPASS_CHARGING:
+		val->intval = get_client_vote(chg->chg_disable_votable,
+					      USER_BYPASS_VOTER);
+		break;
 	case POWER_SUPPLY_PROP_FCC_STEPPER_ENABLE:
 		val->intval = chg->fcc_stepper_enable;
 		break;
@@ -2003,16 +2024,12 @@ static int smb5_batt_set_prop(struct power_supply *psy,
 		power_supply_changed(chg->batt_psy);
 		break;
 	case POWER_SUPPLY_PROP_BATTERY_CHARGING_ENABLED:
-		/*
-		 * Keep the input up and stop charging the battery (bypass).
-		 * The charge pump feeds the battery directly, so stop it too.
-		 */
-		if (!chg->cp_disable_votable)
-			chg->cp_disable_votable = find_votable("CP_DISABLE");
-		if (chg->cp_disable_votable)
-			vote(chg->cp_disable_votable, BYPASS_VOTER,
-			     !val->intval, 0);
-		rc = vote(chg->chg_disable_votable, BYPASS_VOTER, !val->intval, 0);
+		/* Charging control of the health HAL (charge limit). */
+		rc = smb5_vote_bypass(chg, BYPASS_VOTER, !val->intval);
+		break;
+	case POWER_SUPPLY_PROP_BYPASS_CHARGING:
+		/* Manual bypass, independent of the charge limit. */
+		rc = smb5_vote_bypass(chg, USER_BYPASS_VOTER, !!val->intval);
 		break;
 	case POWER_SUPPLY_PROP_RECHARGE_SOC:
 		rc = smblib_set_prop_rechg_soc_thresh(chg, val);
@@ -2051,6 +2068,7 @@ static int smb5_batt_prop_is_writeable(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_STEP_CHARGING_ENABLED:
 	case POWER_SUPPLY_PROP_DIE_HEALTH:
 	case POWER_SUPPLY_PROP_BATTERY_CHARGING_ENABLED:
+	case POWER_SUPPLY_PROP_BYPASS_CHARGING:
 		return 1;
 	default:
 		break;
