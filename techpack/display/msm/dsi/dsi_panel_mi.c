@@ -1271,6 +1271,44 @@ error:
 	return retval;
 }
 
+/*
+ * Lenovo TB-9707F: the TDDI touch controller scans in the vertical porch and
+ * needs its scan table (page 0x2A register 0x23) to match the frame rate, or
+ * its firmware resets and stops reporting. The stock panel DT only has the
+ * 60 and 120 Hz values (0x0C, 0x0D); the firmware also has the 30 Hz table
+ * (0x0E, as on the Xiaomi NT36523 panels). No other rate has a table.
+ */
+#define NT36523_SCAN_TABLE_30HZ 0x0e
+
+/* Send the 60 Hz rate command set with another scan table value. */
+static int dsi_panel_send_scan_table(struct dsi_panel *panel,
+				     struct dsi_display_mode_priv_info *priv_info,
+				     int value)
+{
+	struct dsi_panel_cmd_set *set =
+		&priv_info->cmd_sets[DSI_CMD_SET_DISP_PEN_60HZ];
+	u8 *reg = NULL;
+	u8 old;
+	int i, rc;
+
+	for (i = 0; i < set->count; i++) {
+		struct mipi_dsi_msg *msg = &set->cmds[i].msg;
+
+		if (msg->tx_len == 2 && ((const u8 *)msg->tx_buf)[0] == 0x23) {
+			reg = (u8 *)msg->tx_buf;
+			break;
+		}
+	}
+	if (!reg)
+		return -EINVAL;
+
+	old = reg[1];
+	reg[1] = value;
+	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_DISP_PEN_60HZ);
+	reg[1] = old;
+	return rc;
+}
+
 int dsi_panel_match_fps_pen_setting(struct dsi_panel *panel,
 				struct dsi_display_mode *adj_mode)
 {
@@ -1295,8 +1333,12 @@ int dsi_panel_match_fps_pen_setting(struct dsi_panel *panel,
 		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_DISP_PEN_120HZ);
 	else if (adj_mode->timing.refresh_rate == 60)
 		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_DISP_PEN_60HZ);
-	else if (adj_mode->timing.refresh_rate == 30)
+	else if (adj_mode->timing.refresh_rate == 30 &&
+		 priv_info->cmd_sets[DSI_CMD_SET_DISP_PEN_30HZ].count)
 		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_DISP_PEN_30HZ);
+	else if (adj_mode->timing.refresh_rate == 30)
+		rc = dsi_panel_send_scan_table(panel, priv_info,
+					       NT36523_SCAN_TABLE_30HZ);
 
 	if (rc) {
 		pr_err("Failed to send DSI_CMD_SET_DISP_PEN_120HZ command\n");
